@@ -25,23 +25,27 @@ def main():
     parser.add_argument("--checkpoint", type=str, required=True, help="Path to model checkpoint")
     parser.add_argument("--annotations", type=str, help="Path to annotation file")
     parser.add_argument("--data-yaml", type=str, help="Path to YOLO dataset YAML file")
-    parser.add_argument("--output-dir", type=str, default="./outputs", help="Output directory")
+    parser.add_argument("--output-dir", type=str, help="Output directory (defaults to run dir)")
+    parser.add_argument("--run-name", type=str, help="Name for this experimental run")
+    parser.add_argument("--config-override", type=str, action="append", dest="overrides",
+                       help="Config override in format 'key=value' (can be used multiple times)")
+    parser.add_argument("--verify-config", action="store_true", default=True,
+                       help="Verify config hash from checkpoint")
     parser.add_argument("--log-level", type=str, default="INFO", help="Logging level")
+    parser.add_argument("--seed", type=int, default=42, help="Random seed for reproducibility")
 
     args = parser.parse_args()
-
-    # Create output directory with task-specific subdirectory
-    output_dir = args.output_dir
-    if args.task == 'detection' and args.detection_task:
-        output_dir = os.path.join(args.output_dir, args.detection_task)
-    os.makedirs(output_dir, exist_ok=True)
 
     # Create pipeline
     pipeline = StreetScenePipeline(
         args.config,
         args.task,
-        args.log_level,
-        detection_task=args.detection_task
+        log_level=args.log_level,
+        detection_task=args.detection_task,
+        overrides=args.overrides,
+        run_name=args.run_name,
+        output_dir=args.output_dir or "./outputs",
+        seed=args.seed
     )
 
     # Evaluate model
@@ -49,7 +53,7 @@ def main():
         'test_data_path': args.test_data,
         'checkpoint_path': args.checkpoint,
         'annotation_file': args.annotations,
-        'output_dir': output_dir
+        'verify_config': args.verify_config
     }
 
     # For YOLO models, add data_yaml if provided
@@ -58,7 +62,9 @@ def main():
 
     metrics = pipeline.evaluate(**eval_kwargs)
 
+    output_dir = pipeline.run_dir
     print(f"Evaluation completed. Results saved to {output_dir}")
+    print(f"Run ID: {pipeline.run_id}")
     print(f"Test metrics: {metrics}")
 
 

@@ -154,16 +154,37 @@ class Trainer:
         """Compute loss. Should be overridden by subclasses."""
         return self.criterion(outputs, targets)
     
-    def save_checkpoint(self, filepath: str, metrics: Dict[str, float]):
-        """Save model checkpoint."""
-        torch.save({
+    def save_checkpoint(
+        self,
+        filepath: str,
+        metrics: Dict[str, float],
+        metadata: Optional[Dict[str, Any]] = None,
+        config_hash: Optional[str] = None
+    ):
+        """
+        Save model checkpoint.
+        
+        Args:
+            filepath: Path to save checkpoint
+            metrics: Dictionary of metrics to save
+            metadata: Optional metadata to embed in checkpoint
+            config_hash: Optional config hash for reproducibility
+        """
+        checkpoint = {
             'epoch': self.current_epoch,
             'model_state_dict': self.model.state_dict(),
             'optimizer_state_dict': self.optimizer.state_dict(),
             'scaler_state_dict': self.scaler.state_dict() if self.scaler else None,
             'metrics': metrics,
             'config': self.config
-        }, filepath)
+        }
+        
+        if metadata is not None:
+            checkpoint['metadata'] = metadata
+        if config_hash is not None:
+            checkpoint['config_hash'] = config_hash
+        
+        torch.save(checkpoint, filepath)
     
     def load_checkpoint(self, filepath: str):
         """Load model checkpoint."""

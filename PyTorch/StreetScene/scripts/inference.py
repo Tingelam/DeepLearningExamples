@@ -127,24 +127,21 @@ def main():
     parser.add_argument("--input", type=str, required=True, help="Input image, video or directory")
     parser.add_argument("--output", type=str, help="Output file for results (JSON)")
     parser.add_argument("--output-dir", type=str, help="Output directory for predictions/tracks")
+    parser.add_argument("--run-name", type=str, help="Name for this experimental run")
+    parser.add_argument("--config-override", type=str, action="append", dest="overrides",
+                       help="Config override in format 'key=value' (can be used multiple times)")
     parser.add_argument("--confidence", type=float, default=0.5, help="Confidence threshold for detection")
     parser.add_argument("--tracker", type=str, default="botsort.yaml", help="Tracker configuration for tracking mode")
+    parser.add_argument("--seed", type=int, default=42, help="Random seed for reproducibility")
     
     args = parser.parse_args()
     
     # Setup
     device = get_device()
     
-    # Create output directory if specified
-    output_dir = args.output_dir
-    if args.task == 'detection' and args.detection_task:
-        if not output_dir:
-            output_dir = f"./outputs/{args.detection_task}"
-        else:
-            output_dir = os.path.join(output_dir, args.detection_task)
-    
-    if output_dir:
-        os.makedirs(output_dir, exist_ok=True)
+    # Note: For inference, we still use the legacy load_model approach for simplicity,
+    # but the config is now managed through the standard pipeline if needed.
+    # Users can extend this to use the full StreetScenePipeline if they want reproducibility tracking.
     
     # Load model
     model, config = load_model(args.config, args.task, args.checkpoint, device)
