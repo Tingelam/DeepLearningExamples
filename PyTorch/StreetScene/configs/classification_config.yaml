@@ -1,0 +1,48 @@
+# Street Scene Classification Configuration
+classification:
+  vehicle:
+    model:
+      name: "resnet50"
+      num_classes: 10  # vehicle types
+      pretrained: true
+    
+    training:
+      batch_size: 64
+      learning_rate: 0.01
+      epochs: 90
+      optimizer: "sgd"
+      momentum: 0.9
+      weight_decay: 0.0001
+      
+    data:
+      image_size: [224, 224]
+      mean: [0.485, 0.456, 0.406]
+      std: [0.229, 0.224, 0.225]
+      
+    augmentation:
+      horizontal_flip: 0.5
+      rotation: 15
+      brightness: 0.2
+      contrast: 0.2
+      
+  human_attributes:
+    model:
+      name: "resnet34"
+      num_classes: 50  # attribute combinations
+      pretrained: true
+    
+    training:
+      batch_size: 32
+      learning_rate: 0.001
+      epochs: 60
+      optimizer: "adam"
+      weight_decay: 0.0001
+      
+    data:
+      image_size: [224, 224]
+      mean: [0.485, 0.456, 0.406]
+      std: [0.229, 0.224, 0.225]
+
+mixed_precision:
+  enabled: true
+  loss_scale: "dynamic"
