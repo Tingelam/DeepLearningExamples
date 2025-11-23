@@ -17,10 +17,12 @@ def main():
     parser = argparse.ArgumentParser(description="Evaluate Street Scene models")
     parser.add_argument("--config", type=str, required=True, help="Path to config file")
     parser.add_argument("--task", type=str, required=True,
-                        choices=["detection", "vehicle_classification", "human_attributes"],
+                        choices=["detection", "classification"],
                         help="Task type")
     parser.add_argument("--detection-task", type=str,
                         help="Specific detection task (e.g., vehicle_detection, pedestrian_detection)")
+    parser.add_argument("--classification-task", type=str,
+                        help="Classification task name from the configuration catalog")
     parser.add_argument("--test-data", type=str, required=True, help="Path to test data")
     parser.add_argument("--checkpoint", type=str, required=True, help="Path to model checkpoint")
     parser.add_argument("--annotations", type=str, help="Path to annotation file")
@@ -30,10 +32,15 @@ def main():
 
     args = parser.parse_args()
 
+    if args.task == 'classification' and not args.classification_task:
+        parser.error("--classification-task is required when --task classification")
+
     # Create output directory with task-specific subdirectory
     output_dir = args.output_dir
     if args.task == 'detection' and args.detection_task:
         output_dir = os.path.join(args.output_dir, args.detection_task)
+    elif args.task == 'classification' and args.classification_task:
+        output_dir = os.path.join(args.output_dir, args.classification_task)
     os.makedirs(output_dir, exist_ok=True)
 
     # Create pipeline
@@ -41,7 +48,8 @@ def main():
         args.config,
         args.task,
         args.log_level,
-        detection_task=args.detection_task
+        detection_task=args.detection_task,
+        classification_task=args.classification_task,
     )
 
     # Evaluate model

@@ -48,7 +48,8 @@ def main():
     # Initialize pipeline for vehicle classification
     pipeline = StreetScenePipeline(
         config_path="configs/classification_config.yaml",
-        task_type="vehicle_classification"
+        task_type="classification",
+        classification_task="vehicle_types"
     )
     
     # Custom training with specific data loaders
@@ -74,7 +75,7 @@ def main():
     results = pipeline.train(
         train_data_path="/data/vehicles/train",
         val_data_path="/data/vehicles/val",
-        output_dir="./outputs/vehicle_classification"
+        output_dir="./outputs/vehicle_types"
     )
     
     print("Vehicle classification training completed!")
@@ -96,8 +97,9 @@ def main():
     # Initialize pipeline for human attribute analysis
     pipeline = StreetScenePipeline(
         config_path="configs/classification_config.yaml",
-        task_type="human_attributes",
-        log_level="DEBUG"
+        task_type="classification",
+        log_level="DEBUG",
+        classification_task="human_attributes"
     )
     
     # Train with multi-task learning

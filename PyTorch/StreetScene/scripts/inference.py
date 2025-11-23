@@ -10,25 +10,46 @@ import torch
 import cv2
 import numpy as np
 from pathlib import Path
+from typing import Any, Dict, Optional
 
 # Add src to path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
 
 from detection.models import create_detection_model
-from classification.models import create_classification_model
+from classification.models import create_classification_model, resolve_classification_task_config
 from common.utils import load_config, get_device
 from data.dataset import get_val_transforms
 
 
-def load_model(config_path: str, task_type: str, checkpoint_path: str, device: str):
-    """Load trained model."""
+def load_model(
+    config_path: str,
+    task_type: str,
+    checkpoint_path: str,
+    device: str,
+    detection_task: Optional[str] = None,
+    classification_task: Optional[str] = None,
+):
+    """Load trained model and return associated configuration."""
     config = load_config(config_path)
+    task_config: Optional[Dict[str, Any]] = None
     
     if task_type == 'detection':
-        model = create_detection_model(config)
-    elif task_type in ['vehicle_classification', 'human_attributes']:
-        classification_type = task_type.replace('_classification', '')
-        model = create_classification_model(config, classification_type)
+        detection_cfg = config.get('detection', {})
+        if detection_task:
+            tasks = detection_cfg.get('tasks', {})
+            if detection_task not in tasks:
+                raise ValueError(f"Unknown detection task: {detection_task}")
+            task_config = tasks[detection_task]
+        model = create_detection_model(config, task_config)
+    elif task_type == 'classification':
+        if not classification_task:
+            raise ValueError("classification_task must be provided for classification inference")
+        task_config = resolve_classification_task_config(config, classification_task)
+        model = create_classification_model(
+            config,
+            classification_task,
+            task_config=task_config,
+        )
     else:
         raise ValueError(f"Unsupported task type: {task_type}")
     
@@ -38,7 +59,7 @@ def load_model(config_path: str, task_type: str, checkpoint_path: str, device: s
     model.to(device)
     model.eval()
     
-    return model, config
+    return model, config, task_config
 
 
 def preprocess_image(image_path: str, image_size: tuple, device: str):
@@ -88,38 +109,46 @@ def run_detection_inference(model, image_tensor, config, confidence_threshold=0.
     return detections
 
 
-def run_classification_inference(model, image_tensor, task_type):
-    """Run classification inference."""
+def run_classification_inference(
+    model,
+    image_tensor,
+    head_configs: Dict[str, Any],
+):
+    """Run classification inference and return per-head predictions."""
     with torch.no_grad():
         outputs = model(image_tensor)
     
-    if task_type == 'human_attributes':
-        # Multi-task outputs
-        results = {}
-        for task_name, output in outputs.items():
-            probs = torch.softmax(output, dim=1).cpu().numpy()[0]
-            results[task_name] = {
-                'predictions': probs.tolist(),
-                'predicted_class': int(np.argmax(probs))
-            }
-        return results
-    else:
-        # Single task output
-        probs = torch.softmax(outputs, dim=1).cpu().numpy()[0]
-        return {
-            'predictions': probs.tolist(),
-            'predicted_class': int(np.argmax(probs))
+    output_dict = outputs if isinstance(outputs, dict) else {'logits': outputs}
+    results = {}
+    for head_name, logits in output_dict.items():
+        if head_name == 'features':
+            continue
+        head_cfg = head_configs.get(head_name, {}) if head_configs else {}
+        loss_type = head_cfg.get('loss', 'cross_entropy').lower()
+        if loss_type in ('bce', 'bce_with_logits'):
+            probs = torch.sigmoid(logits).cpu().numpy()[0].tolist()
+            preds = [int(score > 0.5) for score in probs]
+        else:
+            probs_tensor = torch.softmax(logits, dim=1).cpu().numpy()[0]
+            probs = probs_tensor.tolist()
+            preds = int(np.argmax(probs_tensor))
+        results[head_name] = {
+            'predictions': probs,
+            'predicted_class': preds
         }
+    return results
 
 
 def main():
     parser = argparse.ArgumentParser(description="Run inference with Street Scene models")
     parser.add_argument("--config", type=str, required=True, help="Path to config file")
     parser.add_argument("--task", type=str, required=True,
-                       choices=["detection", "vehicle_classification", "human_attributes"],
+                       choices=["detection", "classification"],
                        help="Task type")
     parser.add_argument("--detection-task", type=str,
                        help="Specific detection task (e.g., vehicle_detection, pedestrian_detection)")
+    parser.add_argument("--classification-task", type=str,
+                       help="Classification task name from the configuration catalog")
     parser.add_argument("--mode", type=str, default="predict",
                        choices=["predict", "track"],
                        help="Inference mode (predict or track)")
@@ -132,6 +161,9 @@ def main():
     
     args = parser.parse_args()
     
+    if args.task == 'classification' and not args.classification_task:
+        parser.error("--classification-task is required when --task classification")
+    
     # Setup
     device = get_device()
     
@@ -142,20 +174,32 @@ def main():
             output_dir = f"./outputs/{args.detection_task}"
         else:
             output_dir = os.path.join(output_dir, args.detection_task)
+    elif args.task == 'classification' and args.classification_task:
+        if not output_dir:
+            output_dir = f"./outputs/{args.classification_task}"
+        else:
+            output_dir = os.path.join(output_dir, args.classification_task)
     
     if output_dir:
         os.makedirs(output_dir, exist_ok=True)
     
     # Load model
-    model, config = load_model(args.config, args.task, args.checkpoint, device)
+    model, config, task_config = load_model(
+        args.config,
+        args.task,
+        args.checkpoint,
+        device,
+        detection_task=args.detection_task,
+        classification_task=args.classification_task,
+    )
     
     # Get image size from config
     if args.task == 'detection':
         image_size = tuple(config['detection']['data']['image_size'])
         is_yolo = hasattr(model, 'yolo')
     else:
-        config_key = 'vehicle' if args.task == 'vehicle_classification' else 'human_attributes'
-        image_size = tuple(config['classification'][config_key]['data']['image_size'])
+        data_cfg = (task_config or {}).get('data', {})
+        image_size = tuple(data_cfg.get('image_size', (224, 224)))
         is_yolo = False
     
     # Process input
@@ -228,10 +272,11 @@ def main():
             all_results[str(image_file)] = results
     # For classification models
     else:
+        head_configs = (task_config or {}).get('heads', {})
         for image_file in image_files:
             print(f"Processing {image_file}...")
-            image_tensor, original_image = preprocess_image(str(image_file), image_size, device)
-            results = run_classification_inference(model, image_tensor, args.task)
+            image_tensor, _ = preprocess_image(str(image_file), image_size, device)
+            results = run_classification_inference(model, image_tensor, head_configs)
             all_results[str(image_file)] = results
     
     # Save results

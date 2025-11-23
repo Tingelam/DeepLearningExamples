@@ -1,47 +1,75 @@
 # Street Scene Classification Configuration
 classification:
-  vehicle:
+  defaults:
     model:
-      name: "resnet50"
-      num_classes: 10  # vehicle types
+      backbone: "resnet50"
       pretrained: true
-    
+      global_pool: "avg"
+      dropout: 0.0
+      drop_path_rate: 0.0
+      freeze_backbone: false
+      feature_extract: false
     training:
       batch_size: 64
       learning_rate: 0.01
-      epochs: 90
+      epochs: 80
       optimizer: "sgd"
       momentum: 0.9
       weight_decay: 0.0001
-      
     data:
       image_size: [224, 224]
       mean: [0.485, 0.456, 0.406]
       std: [0.229, 0.224, 0.225]
-      
-    augmentation:
-      horizontal_flip: 0.5
-      rotation: 15
-      brightness: 0.2
-      contrast: 0.2
-      
-  human_attributes:
-    model:
-      name: "resnet34"
-      num_classes: 50  # attribute combinations
-      pretrained: true
-    
-    training:
-      batch_size: 32
-      learning_rate: 0.001
-      epochs: 60
-      optimizer: "adam"
-      weight_decay: 0.0001
-      
-    data:
-      image_size: [224, 224]
-      mean: [0.485, 0.456, 0.406]
-      std: [0.229, 0.224, 0.225]
+
+  tasks:
+    vehicle_types:
+      description: "Classify vehicles into coarse-grained types (sedan, SUV, truck, bus, motorcycle)."
+      model:
+        backbone: "resnet50"
+        pretrained: true
+        freeze_backbone: false
+      heads:
+        vehicle_type:
+          num_classes: 5
+          loss: "cross_entropy"
+          metrics: ["accuracy"]
+      training:
+        batch_size: 64
+        learning_rate: 0.01
+        epochs: 90
+        optimizer: "sgd"
+        momentum: 0.9
+        weight_decay: 0.0001
+      data:
+        image_size: [224, 224]
+
+    human_attributes:
+      description: "Predict multiple human-centric attributes from a shared ResNet backbone."
+      model:
+        backbone: "resnet34"
+        pretrained: true
+        freeze_backbone: true
+      heads:
+        gender:
+          num_classes: 2
+          loss: "cross_entropy"
+          metrics: ["accuracy"]
+        age_group:
+          num_classes: 4
+          loss: "cross_entropy"
+          metrics: ["accuracy"]
+        clothing_style:
+          num_classes: 8
+          loss: "cross_entropy"
+          metrics: ["accuracy"]
+      training:
+        batch_size: 32
+        learning_rate: 0.001
+        epochs: 60
+        optimizer: "adam"
+        weight_decay: 0.0001
+      data:
+        image_size: [224, 224]
 
 mixed_precision:
   enabled: true

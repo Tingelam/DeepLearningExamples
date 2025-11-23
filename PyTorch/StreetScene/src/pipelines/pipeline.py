@@ -5,6 +5,7 @@ End-to-end pipelines for Street Scene optimization.
 import os
 import torch
 import torch.nn as nn
+from torch.cuda.amp import autocast
 from torch.utils.data import DataLoader
 from typing import Dict, Any, List, Optional
 import logging
@@ -15,34 +16,50 @@ from ..common.trainer import Trainer
 from ..data.dataset import StreetSceneDataset, get_train_transforms, get_val_transforms, create_dataloader
 from ..detection.models import create_detection_model
 from ..detection.yolo_adapter import YOLOAdapter
-from ..classification.models import create_classification_model
+from ..classification.models import (
+    create_classification_model,
+    resolve_classification_task_config,
+)
 
 
 class StreetScenePipeline:
     """End-to-end pipeline for street scene tasks."""
     
-    def __init__(self, config_path: str, task_type: str, log_level: str = "INFO", detection_task: Optional[str] = None):
+    def __init__(
+        self,
+        config_path: str,
+        task_type: str,
+        log_level: str = "INFO",
+        detection_task: Optional[str] = None,
+        classification_task: Optional[str] = None,
+    ):
         """
         Initialize the pipeline.
         
         Args:
             config_path: Path to configuration file
-            task_type: Type of task ('detection', 'vehicle_classification', 'human_attributes')
+            task_type: Type of task ('detection' or 'classification')
             log_level: Logging level
             detection_task: Specific detection task name (e.g., 'vehicle_detection', 'pedestrian_detection')
+            classification_task: Specific classification task name from the config catalog
         """
         self.config = load_config(config_path)
         self.task_type = task_type
         self.detection_task = detection_task
+        self.classification_task = classification_task
         self.task_config = None
         self.logger = setup_logging(log_level)
         
         # Set random seeds
         seed_everything()
         
-        # For detection tasks, load task-specific configuration
+        # Load task-specific configuration when available
         if self.task_type == 'detection' and detection_task:
-            self._load_detection_task_config(detection_task)
+            self.task_config = self._load_detection_task_config(detection_task)
+        elif self.task_type == 'classification':
+            if not classification_task:
+                raise ValueError("classification_task must be provided when task_type='classification'")
+            self.task_config = self._load_classification_task_config(classification_task)
         
         # Initialize model
         self.model = self._create_model()
@@ -50,7 +67,12 @@ class StreetScenePipeline:
         # Initialize trainer
         self.trainer = self._create_trainer()
         
-        self.logger.info(f"Initialized {task_type}" + (f" ({detection_task})" if detection_task else "") + " pipeline")
+        suffix = ""
+        if detection_task:
+            suffix = f" ({detection_task})"
+        elif classification_task:
+            suffix = f" ({classification_task})"
+        self.logger.info(f"Initialized {task_type}{suffix} pipeline")
     
     def _load_detection_task_config(self, task_name: str) -> None:
         """Load task-specific detection configuration."""
@@ -62,16 +84,26 @@ class StreetScenePipeline:
         if task_name not in tasks:
             raise ValueError(f"Unknown detection task: {task_name}. Available tasks: {list(tasks.keys())}")
         
-        self.task_config = tasks[task_name]
+        task_config = tasks[task_name]
         self.logger.info(f"Loaded task configuration for: {task_name}")
+        return task_config
+    
+    def _load_classification_task_config(self, task_name: str) -> Dict[str, Any]:
+        """Load and resolve classification task configuration."""
+        resolved = resolve_classification_task_config(self.config, task_name)
+        self.logger.info(f"Loaded classification task configuration for: {task_name}")
+        return resolved
     
     def _create_model(self) -> nn.Module:
         """Create model based on task type."""
         if self.task_type == 'detection':
             return create_detection_model(self.config, self.task_config)
-        elif self.task_type in ['vehicle_classification', 'human_attributes']:
-            classification_type = self.task_type.replace('_classification', '')
-            return create_classification_model(self.config, classification_type)
+        elif self.task_type == 'classification':
+            return create_classification_model(
+                self.config,
+                self.classification_task,
+                task_config=self.task_config,
+            )
         else:
             raise ValueError(f"Unsupported task type: {self.task_type}")
     
@@ -84,10 +116,25 @@ class StreetScenePipeline:
                 return YOLODetectionTrainer(self.model, self.config, self.task_config)
             else:
                 return DetectionTrainer(self.model, self.config)
-        elif self.task_type in ['vehicle_classification', 'human_attributes']:
-            return ClassificationTrainer(self.model, self.config, self.task_type)
+        elif self.task_type == 'classification':
+            trainer_config = {
+                'training': (self.task_config or {}).get('training', {}),
+                'mixed_precision': self.config.get('mixed_precision', {}),
+            }
+            return ClassificationTrainer(
+                self.model,
+                trainer_config,
+                self.task_config,
+                self.classification_task,
+            )
         else:
             raise ValueError(f"Unsupported task type: {self.task_type}")
+    
+    def _get_classification_section(self, section: str) -> Dict[str, Any]:
+        """Helper to fetch a classification section merged with defaults."""
+        if self.task_type != 'classification' or not self.task_config:
+            raise ValueError("Classification task configuration is not initialized")
+        return self.task_config.get(section, {})
     
     def prepare_data(
         self,
@@ -99,9 +146,11 @@ class StreetScenePipeline:
         # Get image size from config
         if self.task_type == 'detection':
             image_size = tuple(self.config['detection']['data']['image_size'])
+        elif self.task_type == 'classification':
+            data_cfg = self._get_classification_section('data')
+            image_size = tuple(data_cfg.get('image_size', (224, 224)))
         else:
-            config_key = 'vehicle' if self.task_type == 'vehicle_classification' else 'human_attributes'
-            image_size = tuple(self.config['classification'][config_key]['data']['image_size'])
+            raise ValueError(f"Unsupported task type: {self.task_type}")
         
         # Create transforms
         train_transform = get_train_transforms(image_size)
@@ -144,9 +193,11 @@ class StreetScenePipeline:
         """Get batch size from config."""
         if self.task_type == 'detection':
             return self.config['detection']['training']['batch_size']
+        elif self.task_type == 'classification':
+            training_cfg = self._get_classification_section('training')
+            return training_cfg.get('batch_size', 32)
         else:
-            config_key = 'vehicle' if self.task_type == 'vehicle_classification' else 'human_attributes'
-            return self.config['classification'][config_key]['training']['batch_size']
+            raise ValueError(f"Unsupported task type: {self.task_type}")
     
     def train(
         self,
@@ -229,7 +280,7 @@ class StreetScenePipeline:
             
             # Save best model
             if val_metrics_epoch:
-                current_metric = list(val_metrics_epoch.values())[0]  # Use first validation metric
+                current_metric = self._select_monitor_metric(val_metrics_epoch)
                 if current_metric > best_val_metric:
                     best_val_metric = current_metric
                     best_model_path = os.path.join(output_dir, "best_model.pth")
@@ -245,9 +296,11 @@ class StreetScenePipeline:
         """Get number of epochs from config."""
         if self.task_type == 'detection':
             return self.config['detection']['training']['epochs']
+        elif self.task_type == 'classification':
+            training_cfg = self._get_classification_section('training')
+            return training_cfg.get('epochs', 1)
         else:
-            config_key = 'vehicle' if self.task_type == 'vehicle_classification' else 'human_attributes'
-            return self.config['classification'][config_key]['training']['epochs']
+            raise ValueError(f"Unsupported task type: {self.task_type}")
     
     def evaluate(
         self,
@@ -322,13 +375,24 @@ class StreetScenePipeline:
         """Get image size from config."""
         if self.task_type == 'detection':
             return tuple(self.config['detection']['data']['image_size'])
+        elif self.task_type == 'classification':
+            data_cfg = self._get_classification_section('data')
+            return tuple(data_cfg.get('image_size', (224, 224)))
         else:
-            config_key = 'vehicle' if self.task_type == 'vehicle_classification' else 'human_attributes'
-            return tuple(self.config['classification'][config_key]['data']['image_size'])
+            raise ValueError(f"Unsupported task type: {self.task_type}")
+
+    def _select_monitor_metric(self, metrics: Dict[str, float]) -> float:
+        """Pick the validation metric to monitor for checkpointing."""
+        if not metrics:
+            return 0.0
+        for key, value in metrics.items():
+            if key.startswith('val_') and key != 'val_loss':
+                return value
+        return metrics.get('val_loss', 0.0)
 
 
 class YOLODetectionTrainer(Trainer):
-    """Trainer for YOLO detection models."""
+
     
     def __init__(
         self,
@@ -441,34 +505,207 @@ class DetectionTrainer(Trainer):
 
 
 class ClassificationTrainer(Trainer):
-    """Trainer for classification models."""
+    """Trainer for classification models with configurable multi-head support."""
     
-    def __init__(self, model: nn.Module, config: Dict[str, Any], task_type: str, **kwargs):
-        super().__init__(model, config, **kwargs)
-        self.task_type = task_type
+    def __init__(
+        self,
+        model: nn.Module,
+        trainer_config: Dict[str, Any],
+        task_config: Dict[str, Any],
+        task_name: str,
+        **kwargs,
+    ):
+        self.task_config = task_config or {}
+        self.task_name = task_name
+        self.head_configs = self.task_config.get('heads', {}) or {}
+        self.head_loss_types: Dict[str, str] = {}
+        self.head_loss_weights: Dict[str, float] = {}
+        self.head_metric_map: Dict[str, List[str]] = {}
+        self.metric_keys: List[str] = []
+        super().__init__(model, trainer_config, **kwargs)
+        self._initialize_metric_plan()
+    
+    def _initialize_metric_plan(self) -> None:
+        """Prepare metric tracking plan per head."""
+        metric_keys: List[str] = []
+        for head_name, head_cfg in self.head_configs.items():
+            metrics = head_cfg.get('metrics')
+            if metrics is None:
+                metrics = [head_cfg.get('metric', 'accuracy')]
+            if isinstance(metrics, str):
+                metrics = [metrics]
+            normalized = [metric.lower() for metric in metrics if metric]
+            if not normalized:
+                normalized = ['accuracy']
+            self.head_metric_map[head_name] = normalized
+            for metric_name in normalized:
+                metric_keys.append(f"{head_name}_{metric_name}")
+        self.metric_keys = metric_keys
     
     def _create_criterion(self) -> nn.Module:
-        """Create loss function for classification."""
-        if self.task_type == 'human_attributes':
-            # Multi-task loss for human attributes
-            return {
-                'gender': nn.CrossEntropyLoss(),
-                'age': nn.CrossEntropyLoss(),
-                'clothing': nn.CrossEntropyLoss()
-            }
-        else:
-            # Standard classification loss
+        """Create loss functions per head based on configuration."""
+        if not self.head_configs:
             return nn.CrossEntropyLoss()
+        criteria: Dict[str, nn.Module] = {}
+        for head_name, head_cfg in self.head_configs.items():
+            loss_type = head_cfg.get('loss', 'cross_entropy').lower()
+            self.head_loss_types[head_name] = loss_type
+            self.head_loss_weights[head_name] = float(head_cfg.get('loss_weight', 1.0))
+            if loss_type == 'cross_entropy':
+                weight = head_cfg.get('class_weights')
+                weight_tensor = None
+                if weight is not None:
+                    weight_tensor = torch.tensor(weight, dtype=torch.float32, device=self.device)
+                criteria[head_name] = nn.CrossEntropyLoss(weight=weight_tensor)
+            elif loss_type in ('bce', 'bce_with_logits'):
+                pos_weight = head_cfg.get('pos_weight')
+                pos_weight_tensor = None
+                if pos_weight is not None:
+                    pos_weight_tensor = torch.tensor(pos_weight, dtype=torch.float32, device=self.device)
+                criteria[head_name] = nn.BCEWithLogitsLoss(pos_weight=pos_weight_tensor)
+            else:
+                raise ValueError(f"Unsupported loss '{loss_type}' for head '{head_name}'")
+        return criteria
+    
+    def _move_targets_to_device(self, targets):
+        if isinstance(targets, dict):
+            return {k: v.to(self.device) for k, v in targets.items()}
+        return targets.to(self.device)
+    
+    def train_epoch(self, train_loader) -> Dict[str, float]:
+        """Train for one epoch with per-head metrics."""
+        self.model.train()
+        total_loss = 0.0
+        num_batches = len(train_loader)
+        metric_totals = {key: 0.0 for key in self.metric_keys}
+        total_samples = 0
+        pbar = tqdm(train_loader, desc=f"Epoch {self.current_epoch}")
+        for data, targets in pbar:
+            data = data.to(self.device)
+            targets = self._move_targets_to_device(targets)
+            self.optimizer.zero_grad()
+            if self.use_amp:
+                with autocast():
+                    outputs = self.model(data)
+                    loss = self._compute_loss(outputs, targets)
+                self.scaler.scale(loss).backward()
+                self.scaler.step(self.optimizer)
+                self.scaler.update()
+            else:
+                outputs = self.model(data)
+                loss = self._compute_loss(outputs, targets)
+                loss.backward()
+                self.optimizer.step()
+            total_loss += loss.item()
+            batch_size = data.size(0)
+            total_samples += batch_size
+            batch_metrics = self._calculate_metrics(outputs, targets)
+            for key, value in batch_metrics.items():
+                if key in metric_totals:
+                    metric_totals[key] += value * batch_size
+            pbar.set_postfix({'loss': loss.item()})
+        avg_loss = total_loss / max(1, num_batches)
+        metrics = {'train_loss': avg_loss}
+        if total_samples > 0:
+            for key in self.metric_keys:
+                metrics[f"train_{key}"] = metric_totals.get(key, 0.0) / total_samples
+        return metrics
+    
+    def validate_epoch(self, val_loader) -> Dict[str, float]:
+        """Validate for one epoch with per-head metrics."""
+        self.model.eval()
+        total_loss = 0.0
+        num_batches = len(val_loader)
+        metric_totals = {key: 0.0 for key in self.metric_keys}
+        total_samples = 0
+        with torch.no_grad():
+            pbar = tqdm(val_loader, desc="Validation")
+            for data, targets in pbar:
+                data = data.to(self.device)
+                targets = self._move_targets_to_device(targets)
+                if self.use_amp:
+                    with autocast():
+                        outputs = self.model(data)
+                        loss = self._compute_loss(outputs, targets)
+                else:
+                    outputs = self.model(data)
+                    loss = self._compute_loss(outputs, targets)
+                total_loss += loss.item()
+                batch_size = data.size(0)
+                total_samples += batch_size
+                batch_metrics = self._calculate_metrics(outputs, targets)
+                for key, value in batch_metrics.items():
+                    if key in metric_totals:
+                        metric_totals[key] += value * batch_size
+                pbar.set_postfix({'val_loss': loss.item()})
+        avg_loss = total_loss / max(1, num_batches)
+        metrics = {'val_loss': avg_loss}
+        if total_samples > 0:
+            for key in self.metric_keys:
+                metrics[f"val_{key}"] = metric_totals.get(key, 0.0) / total_samples
+        return metrics
     
     def _compute_loss(self, outputs, targets) -> torch.Tensor:
-        """Compute loss for classification tasks."""
-        if isinstance(self.criterion, dict):
-            # Multi-task loss
-            total_loss = 0
-            for task_name, criterion in self.criterion.items():
-                task_loss = criterion(outputs[task_name], targets[task_name])
-                total_loss += task_loss
-            return total_loss
-        else:
-            # Single task loss
+        if not isinstance(self.criterion, dict):
             return self.criterion(outputs, targets)
+        total_loss = 0.0
+        output_dict = outputs if isinstance(outputs, dict) else {'logits': outputs}
+        for head_name, criterion in self.criterion.items():
+            if head_name not in output_dict:
+                continue
+            head_target = self._get_head_target(targets, head_name)
+            loss_weight = self.head_loss_weights.get(head_name, 1.0)
+            total_loss += criterion(output_dict[head_name], head_target) * loss_weight
+        return total_loss
+    
+    def _get_head_target(self, targets, head_name: str):
+        if isinstance(targets, dict):
+            if head_name not in targets:
+                raise KeyError(f"Missing target for head '{head_name}'")
+            target = targets[head_name]
+        else:
+            target = targets
+        loss_type = self.head_loss_types.get(head_name, 'cross_entropy')
+        if loss_type in ('bce', 'bce_with_logits'):
+            return target.float()
+        return target
+    
+    def _calculate_metrics(self, outputs, targets) -> Dict[str, float]:
+        metrics: Dict[str, float] = {}
+        output_dict = outputs if isinstance(outputs, dict) else {'logits': outputs}
+        for head_name, metric_names in self.head_metric_map.items():
+            if head_name not in output_dict or head_name == 'features':
+                continue
+            head_target = self._get_head_target(targets, head_name)
+            for metric_name in metric_names:
+                metric_value = self._compute_metric(
+                    metric_name,
+                    output_dict[head_name],
+                    head_target,
+                    self.head_loss_types.get(head_name, 'cross_entropy'),
+                )
+                if metric_value is not None:
+                    metrics[f"{head_name}_{metric_name}"] = metric_value
+        return metrics
+    
+    def _compute_metric(
+        self,
+        metric_name: str,
+        logits: torch.Tensor,
+        target: torch.Tensor,
+        loss_type: str,
+    ) -> Optional[float]:
+        metric = metric_name.lower()
+        if metric == 'accuracy':
+            if loss_type in ('bce', 'bce_with_logits'):
+                probs = torch.sigmoid(logits)
+                preds = (probs > 0.5).float()
+                correct = (preds == target.float()).float().mean(dim=1)
+                return correct.mean().item()
+            else:
+                if target.dim() > 1 and target.size(-1) == logits.size(-1):
+                    target = torch.argmax(target, dim=1)
+                preds = torch.argmax(logits, dim=1)
+                return (preds == target.long()).float().mean().item()
+        return None
+
