@@ -14,6 +14,7 @@ This repository provides a comprehensive framework for street scene optimization
 - [Adding New Tasks](#adding-new-tasks)
 - [Performance Optimization](#performance-optimization)
 - [Configuration](#configuration)
+- [Evaluation and Reporting](#evaluation-and-reporting)
 - [Scripts and Tools](#scripts-and-tools)
 
 ## Overview
@@ -558,6 +559,118 @@ classification:
       momentum: 0.9
       weight_decay: 0.0001
 ```
+
+## Evaluation and Reporting
+
+The framework includes a comprehensive evaluation and reporting system that automatically generates metrics, reports, and supports reproducibility verification.
+
+### Automated Metrics Computation
+
+Training and evaluation runs automatically compute task-aware metrics:
+
+- **Detection**: mAP@0.5, mAP@0.5:0.95, precision, recall, PR curves
+- **Tracking**: MOTA, MOTP, IDF1, ID switches, fragmentations
+- **Classification**: Accuracy, precision, recall, F1, AUROC, confusion matrices
+
+### Report Generation
+
+Every run automatically generates comprehensive reports in multiple formats:
+
+- **JSON**: Machine-readable metrics (`metrics_report.json`)
+- **Markdown**: Documentation-friendly format (`metrics_report.md`)
+- **HTML**: Standalone report (`metrics_report.html`)
+- **Plots**: Visualization of metrics and training history (`plots/`)
+
+Reports include:
+- All computed metrics
+- Configuration metadata
+- Dataset information
+- Training history
+- Reproduction checklist
+
+### Workflow Automation
+
+#### Full Lifecycle Workflow
+
+Run the complete pipeline (data prep → training → evaluation → reporting):
+
+```bash
+python scripts/run_workflow.py \
+    --config configs/detection_config.yaml \
+    --task-type detection \
+    --detection-task vehicle_detection \
+    --train-data /path/to/train \
+    --val-data /path/to/val \
+    --test-data /path/to/test \
+    --data-yaml configs/datasets/vehicle_detection.yaml \
+    --output-dir ./outputs \
+    --run-name vehicle_detection_v1
+```
+
+#### Compare Multiple Runs
+
+Compare metrics across multiple training runs:
+
+```bash
+python scripts/compare_runs.py \
+    --run-ids ./outputs/run1 ./outputs/run2 ./outputs/run3 \
+    --output ./comparison_report \
+    --format both \
+    --metric mAP@0.5
+```
+
+This generates a comparison table showing:
+- Side-by-side metrics for all runs
+- Best performing run for each metric
+- Detailed comparison report
+
+#### Verify Reproducibility
+
+Validate that a saved checkpoint reproduces stored metrics:
+
+```bash
+python scripts/verify_repro.py \
+    --run-id ./outputs/my_run \
+    --test-data /path/to/test \
+    --data-yaml configs/datasets/vehicle_detection.yaml \
+    --tolerance 0.01
+```
+
+The script:
+1. Loads original metrics
+2. Re-evaluates the checkpoint
+3. Compares metrics within tolerance
+4. Reports discrepancies (if any)
+5. Returns exit code 0 if verified, 1 if failed
+
+#### Deploy Models
+
+Package a trained model for deployment:
+
+```bash
+python scripts/deploy.py \
+    --run-id ./outputs/my_best_run \
+    --output-dir ./deployment \
+    --deployment-name vehicle_detector_v1 \
+    --include-metrics
+```
+
+The deployment package includes:
+- Model checkpoint
+- Configuration file
+- Deployment manifest
+- README with usage instructions
+- Metrics report (optional)
+
+### Best Practices
+
+1. **Use `run_workflow.py` for production runs** to ensure all metadata is captured
+2. **Compare against baselines** using `--compare-with` to track improvements
+3. **Verify reproducibility** on important checkpoints with `verify_repro.py`
+4. **Archive run directories** - they contain complete configuration and history
+5. **Use meaningful run names** that include task, model variant, and key parameters
+
+For detailed documentation on evaluation and reporting, see [docs/evaluation_and_reporting.md](docs/evaluation_and_reporting.md).
 
 ## Scripts and Tools
 

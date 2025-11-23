@@ -16,6 +16,8 @@ from ..data.dataset import StreetSceneDataset, get_train_transforms, get_val_tra
 from ..detection.models import create_detection_model
 from ..detection.yolo_adapter import YOLOAdapter
 from ..classification.models import create_classification_model
+from ..evaluation.metrics import compute_detection_metrics, compute_tracking_metrics, compute_classification_metrics
+from ..evaluation.reporting import MetricsReporter, generate_report
 
 
 class StreetScenePipeline:
@@ -178,7 +180,7 @@ class StreetScenePipeline:
         
         # For YOLO models, use YOLO trainer directly
         if isinstance(self.trainer, YOLODetectionTrainer):
-            return self.trainer.train(
+            results = self.trainer.train(
                 train_data_path=train_data_path,
                 val_data_path=val_data_path,
                 annotation_file=annotation_file,
@@ -187,6 +189,11 @@ class StreetScenePipeline:
                 resume=bool(resume_checkpoint),
                 **kwargs
             )
+            
+            # Generate report for YOLO training
+            self._generate_training_report(results, output_dir, data_yaml=data_yaml)
+            
+            return results
         
         # Prepare data
         train_loader, val_loader = self.prepare_data(
@@ -235,11 +242,16 @@ class StreetScenePipeline:
                     best_model_path = os.path.join(output_dir, "best_model.pth")
                     self.trainer.save_checkpoint(best_model_path, epoch_metrics)
         
-        return {
+        results = {
             'train_metrics': train_metrics,
             'best_val_metric': best_val_metric,
             'output_dir': output_dir
         }
+        
+        # Generate report for non-YOLO training
+        self._generate_training_report(results, output_dir, training_history=train_metrics)
+        
+        return results
     
     def _get_num_epochs(self) -> int:
         """Get number of epochs from config."""
@@ -274,13 +286,18 @@ class StreetScenePipeline:
         """
         # For YOLO models, use YOLO evaluator directly
         if isinstance(self.trainer, YOLODetectionTrainer):
-            return self.trainer.evaluate(
+            results = self.trainer.evaluate(
                 test_data_path=test_data_path,
                 checkpoint_path=checkpoint_path,
                 data_yaml=data_yaml,
                 output_dir=output_dir,
                 **kwargs
             )
+            
+            # Generate evaluation report
+            self._generate_evaluation_report(results, output_dir, checkpoint_path, data_yaml=data_yaml)
+            
+            return results
         
         # Load checkpoint
         metrics = self.trainer.load_checkpoint(checkpoint_path)
@@ -316,6 +333,9 @@ class StreetScenePipeline:
             'task_type': self.task_type
         }, results_path)
         
+        # Generate evaluation report
+        self._generate_evaluation_report(test_metrics, output_dir, checkpoint_path)
+        
         return test_metrics
     
     def _get_image_size(self) -> tuple:
@@ -325,6 +345,83 @@ class StreetScenePipeline:
         else:
             config_key = 'vehicle' if self.task_type == 'vehicle_classification' else 'human_attributes'
             return tuple(self.config['classification'][config_key]['data']['image_size'])
+    
+    def _generate_training_report(
+        self,
+        results: Dict[str, Any],
+        output_dir: str,
+        data_yaml: Optional[str] = None,
+        training_history: Optional[List[Dict[str, float]]] = None
+    ) -> None:
+        """Generate training report with metrics and metadata."""
+        try:
+            # Extract metrics from results
+            if 'metrics' in results:
+                metrics = results['metrics']
+            elif 'train_metrics' in results:
+                metrics = results['train_metrics'][-1] if results['train_metrics'] else {}
+            else:
+                metrics = {}
+            
+            # Compute metrics based on task type
+            if self.task_type == 'detection':
+                computed_metrics = compute_detection_metrics(results)
+            else:
+                computed_metrics = metrics
+            
+            # Prepare dataset info
+            dataset_info = {}
+            if data_yaml:
+                dataset_info['data_yaml'] = data_yaml
+            
+            # Generate report
+            reporter = MetricsReporter(output_dir, self.task_type, self.detection_task)
+            reporter.generate_report(
+                metrics=computed_metrics,
+                config=self.config,
+                dataset_info=dataset_info,
+                training_history=training_history or results.get('train_metrics'),
+                checkpoint_path=os.path.join(output_dir, 'best_model.pth')
+            )
+            
+            self.logger.info(f"Training report generated in {output_dir}")
+        except Exception as e:
+            self.logger.warning(f"Failed to generate training report: {e}")
+    
+    def _generate_evaluation_report(
+        self,
+        results: Dict[str, Any],
+        output_dir: str,
+        checkpoint_path: str,
+        data_yaml: Optional[str] = None
+    ) -> None:
+        """Generate evaluation report with metrics and metadata."""
+        try:
+            # Compute metrics based on task type
+            if self.task_type == 'detection':
+                metrics = compute_detection_metrics(results)
+            elif self.task_type == 'tracking':
+                metrics = results if isinstance(results, dict) else {}
+            else:
+                metrics = results if isinstance(results, dict) else {}
+            
+            # Prepare dataset info
+            dataset_info = {}
+            if data_yaml:
+                dataset_info['data_yaml'] = data_yaml
+            
+            # Generate report
+            reporter = MetricsReporter(output_dir, self.task_type, self.detection_task)
+            reporter.generate_report(
+                metrics=metrics,
+                config=self.config,
+                dataset_info=dataset_info,
+                checkpoint_path=checkpoint_path
+            )
+            
+            self.logger.info(f"Evaluation report generated in {output_dir}")
+        except Exception as e:
+            self.logger.warning(f"Failed to generate evaluation report: {e}")
 
 
 class YOLODetectionTrainer(Trainer):
