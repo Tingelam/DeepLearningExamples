@@ -12,7 +12,11 @@ from pathlib import Path
 
 from ..common.utils import setup_logging, load_config, seed_everything
 from ..common.trainer import Trainer
-from ..data.dataset import StreetSceneDataset, get_train_transforms, get_val_transforms, create_dataloader
+from ..data.dataset import StreetSceneDataset, create_dataloader
+from ..data.transforms import get_train_transforms, get_val_transforms, create_preprocessing_hooks
+from ..data.yolo_dataset import create_yolo_dataloader
+from ..data.classification_dataset import create_classification_dataloader
+from ..data.catalog import get_catalog
 from ..detection.models import create_detection_model
 from ..detection.yolo_adapter import YOLOAdapter
 from ..classification.models import create_classification_model
@@ -36,6 +40,9 @@ class StreetScenePipeline:
         self.detection_task = detection_task
         self.task_config = None
         self.logger = setup_logging(log_level)
+        
+        catalog_cfg = self.config.get('data_catalog', {})
+        self.catalog_path = catalog_cfg.get('path', 'data/datasets.yaml')
         
         # Set random seeds
         seed_everything()
@@ -91,52 +98,157 @@ class StreetScenePipeline:
     
     def prepare_data(
         self,
-        train_data_path: str,
+        train_data_path: Optional[str] = None,
         val_data_path: Optional[str] = None,
-        annotation_file: Optional[str] = None
+        annotation_file: Optional[str] = None,
+        dataset_name: Optional[str] = None,
+        dataset_version: Optional[str] = None,
+        catalog_path: str = "data/datasets.yaml"
     ) -> tuple:
-        """Prepare training and validation data loaders."""
+        """
+        Prepare training and validation data loaders.
+        
+        Can load data either from:
+        1. Dataset catalog (preferred) - using dataset_name parameter
+        2. Direct paths - using train_data_path and val_data_path parameters
+        
+        Args:
+            train_data_path: Direct path to training data (legacy)
+            val_data_path: Direct path to validation data (legacy)
+            annotation_file: Path to annotation file (legacy)
+            dataset_name: Name of dataset in catalog
+            dataset_version: Version of dataset in catalog
+            catalog_path: Path to catalog file
+            
+        Returns:
+            Tuple of (train_loader, val_loader)
+        """
+        # Resolve dataset from catalog if dataset_name is provided
+        if dataset_name:
+            catalog = get_catalog(catalog_path)
+            dataset_info = catalog.get_dataset(dataset_name, dataset_version)
+            
+            self.logger.info(f"Loading dataset from catalog: {dataset_name} version {dataset_info['version']}")
+            
+            # Get paths from catalog
+            train_data_path = catalog.get_dataset_path(dataset_name, dataset_version, 'train')
+            val_data_path = catalog.get_dataset_path(dataset_name, dataset_version, 'val') \
+                if 'val' in dataset_info['splits'] else None
+            
+            # Get label schema
+            label_schema = catalog.get_label_schema(dataset_name, dataset_version)
+            
+            # Determine data format
+            data_format = dataset_info['data_format']
+            task_type = dataset_info['task_type']
+            
+        else:
+            # Legacy path: use direct paths
+            data_format = 'legacy'
+            task_type = self.task_type
+        
         # Get image size from config
-        if self.task_type == 'detection':
+        if self.task_type == 'detection' or self.task_type == 'tracking':
             image_size = tuple(self.config['detection']['data']['image_size'])
+            augmentation_config = self.config.get('detection', {}).get('augmentation', {})
         else:
             config_key = 'vehicle' if self.task_type == 'vehicle_classification' else 'human_attributes'
             image_size = tuple(self.config['classification'][config_key]['data']['image_size'])
+            augmentation_config = self.config['classification'][config_key].get('augmentation', {})
         
-        # Create transforms
-        train_transform = get_train_transforms(image_size)
-        val_transform = get_val_transforms(image_size)
+        # Create preprocessing hooks
+        preprocessing_hooks = create_preprocessing_hooks(self.task_type, augmentation_config)
         
-        # Create datasets
-        train_dataset = StreetSceneDataset(
-            data_path=train_data_path,
-            transform=train_transform,
-            annotation_file=annotation_file
-        )
+        # Create loaders based on data format
+        if dataset_name and data_format == 'yolo':
+            # Use YOLO dataloader
+            train_transform = get_train_transforms(image_size, task_type='detection', config=augmentation_config)
+            val_transform = get_val_transforms(image_size, task_type='detection')
+            
+            # Note: For YOLO training via ultralytics, we typically pass the data.yaml directly
+            # These loaders are for custom training loops
+            batch_size = self._get_batch_size()
+            
+            train_loader = create_yolo_dataloader(
+                data_yaml=os.path.join(os.path.dirname(train_data_path), '..', 'data.yaml'),
+                split='train',
+                batch_size=batch_size,
+                shuffle=True,
+                transform=train_transform,
+                preprocessing_hooks=preprocessing_hooks
+            )
+            
+            val_loader = None
+            if val_data_path:
+                val_loader = create_yolo_dataloader(
+                    data_yaml=os.path.join(os.path.dirname(val_data_path), '..', 'data.yaml'),
+                    split='val',
+                    batch_size=batch_size,
+                    shuffle=False,
+                    transform=val_transform,
+                    preprocessing_hooks=preprocessing_hooks
+                )
         
-        val_dataset = None
-        if val_data_path:
-            val_dataset = StreetSceneDataset(
-                data_path=val_data_path,
-                transform=val_transform,
+        elif dataset_name and data_format in ['image_folder', 'csv_attribute']:
+            # Use classification dataloader
+            train_transform = get_train_transforms(image_size, task_type='classification', config=augmentation_config)
+            val_transform = get_val_transforms(image_size, task_type='classification')
+            
+            batch_size = self._get_batch_size()
+            
+            train_loader = create_classification_dataloader(
+                data_path=train_data_path,
+                dataset_type=data_format,
+                batch_size=batch_size,
+                shuffle=True,
+                transform=train_transform,
+                preprocessing_hooks=preprocessing_hooks
+            )
+            
+            val_loader = None
+            if val_data_path:
+                val_loader = create_classification_dataloader(
+                    data_path=val_data_path,
+                    dataset_type=data_format,
+                    batch_size=batch_size,
+                    shuffle=False,
+                    transform=val_transform,
+                    preprocessing_hooks=preprocessing_hooks
+                )
+        
+        else:
+            # Legacy: use original StreetSceneDataset
+            train_transform = get_train_transforms(image_size)
+            val_transform = get_val_transforms(image_size)
+            
+            train_dataset = StreetSceneDataset(
+                data_path=train_data_path,
+                transform=train_transform,
                 annotation_file=annotation_file
             )
-        
-        # Create data loaders
-        batch_size = self._get_batch_size()
-        train_loader = create_dataloader(
-            train_dataset,
-            batch_size=batch_size,
-            shuffle=True
-        )
-        
-        val_loader = None
-        if val_dataset:
-            val_loader = create_dataloader(
-                val_dataset,
+            
+            val_dataset = None
+            if val_data_path:
+                val_dataset = StreetSceneDataset(
+                    data_path=val_data_path,
+                    transform=val_transform,
+                    annotation_file=annotation_file
+                )
+            
+            batch_size = self._get_batch_size()
+            train_loader = create_dataloader(
+                train_dataset,
                 batch_size=batch_size,
-                shuffle=False
+                shuffle=True
             )
+            
+            val_loader = None
+            if val_dataset:
+                val_loader = create_dataloader(
+                    val_dataset,
+                    batch_size=batch_size,
+                    shuffle=False
+                )
         
         return train_loader, val_loader
     
@@ -148,14 +260,42 @@ class StreetScenePipeline:
             config_key = 'vehicle' if self.task_type == 'vehicle_classification' else 'human_attributes'
             return self.config['classification'][config_key]['training']['batch_size']
     
+    def _resolve_dataset_params(
+        self,
+        dataset_name: Optional[str],
+        dataset_version: Optional[str]
+    ) -> Tuple[Optional[str], Optional[str]]:
+        """Resolve dataset name/version from config if not provided."""
+        resolved_name = dataset_name
+        resolved_version = dataset_version
+        
+        if self.task_type == 'detection':
+            dataset_cfg = (self.task_config or {}).get('dataset', {})
+            if resolved_name is None:
+                resolved_name = dataset_cfg.get('name', self.detection_task)
+            if resolved_version is None:
+                resolved_version = dataset_cfg.get('version')
+        else:
+            config_key = 'vehicle' if self.task_type == 'vehicle_classification' else 'human_attributes'
+            dataset_cfg = self.config.get('classification', {}).get(config_key, {}).get('dataset', {})
+            if resolved_name is None:
+                resolved_name = dataset_cfg.get('name')
+            if resolved_version is None:
+                resolved_version = dataset_cfg.get('version')
+        
+        return resolved_name, resolved_version
+    
     def train(
         self,
-        train_data_path: str,
+        train_data_path: Optional[str] = None,
         val_data_path: Optional[str] = None,
         annotation_file: Optional[str] = None,
         output_dir: str = "./outputs",
         resume_checkpoint: Optional[str] = None,
         data_yaml: Optional[str] = None,
+        dataset_name: Optional[str] = None,
+        dataset_version: Optional[str] = None,
+        catalog_path: str = "data/datasets.yaml",
         **kwargs
     ) -> Dict[str, Any]:
         """
@@ -168,6 +308,9 @@ class StreetScenePipeline:
             output_dir: Directory to save outputs
             resume_checkpoint: Path to checkpoint to resume from
             data_yaml: Path to YOLO dataset YAML file (for YOLO models)
+            dataset_name: Name of dataset in catalog
+            dataset_version: Version of dataset in catalog
+            catalog_path: Path to catalog file
             **kwargs: Additional arguments for YOLO trainer
         
         Returns:
@@ -175,6 +318,14 @@ class StreetScenePipeline:
         """
         # Create output directory
         os.makedirs(output_dir, exist_ok=True)
+        
+        # Export dataset manifest for experiment tracking if using catalog
+        if dataset_name:
+            catalog = get_catalog(catalog_path)
+            dataset_info = catalog.get_dataset(dataset_name, dataset_version)
+            manifest_path = os.path.join(output_dir, f"dataset_manifest_{dataset_name}_{dataset_info['version']}.yaml")
+            catalog.export_dataset_manifest(dataset_name, dataset_info['version'], manifest_path)
+            self.logger.info(f"Exported dataset manifest to {manifest_path}")
         
         # For YOLO models, use YOLO trainer directly
         if isinstance(self.trainer, YOLODetectionTrainer):
