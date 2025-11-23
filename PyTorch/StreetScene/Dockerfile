@@ -5,13 +5,16 @@ WORKDIR /workspace
 
 ENV PYTHONPATH "${PYTHONPATH}:/workspace"
 
-RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y python3-tk python3-pip git tmux htop tree libgl1-mesa-glx libglib2.0-0
+RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y python3-tk python3-pip git tmux htop tree libgl1-mesa-glx libglib2.0-0 libsm6 libxext6
 
 # Install Python dependencies
 RUN pip3 install --upgrade pip
 
 COPY requirements.txt .
 RUN pip3 install -r requirements.txt
+
+# Install ultralytics for YOLO detection
+RUN pip3 install ultralytics>=8.0.0
 
 # Copy StreetScene code
 COPY . .
