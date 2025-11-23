@@ -174,42 +174,57 @@ vehicle_dataset/
 
 ### Step 2: Configure Vehicle Classification
 
-Edit `configs/classification_config.yaml`:
+Edit `configs/classification_config.yaml` and add or modify entries under `classification.tasks`:
 
 ```yaml
 classification:
-  vehicle:
+  defaults:
     model:
-      name: "resnet50"
-      num_classes: 3  # sedan, suv, truck
+      backbone: "resnet50"
       pretrained: true
-    
+      global_pool: "avg"
     training:
-      batch_size: 32
+      batch_size: 64
       learning_rate: 0.01
-      epochs: 30
+      epochs: 60
       optimizer: "sgd"
-      momentum: 0.9
-      weight_decay: 0.0001
-      
     data:
       image_size: [224, 224]
       mean: [0.485, 0.456, 0.406]
       std: [0.229, 0.224, 0.225]
-      
-    augmentation:
-      horizontal_flip: 0.5
-      rotation: 15
-      brightness: 0.2
-      contrast: 0.2
+  tasks:
+    vehicle_types:
+      description: "Sedan/SUV/truck classification"
+      heads:
+        vehicle_type:
+          num_classes: 3
+          loss: "cross_entropy"
+          metrics: ["accuracy"]
+    human_attributes:
+      description: "Multi-head attribute recognition"
+      model:
+        backbone: "resnet34"
+        freeze_backbone: true
+      heads:
+        gender:
+          num_classes: 2
+          loss: "cross_entropy"
+          metrics: ["accuracy"]
+        clothing_style:
+          num_classes: 8
+          loss: "cross_entropy"
+          metrics: ["accuracy"]
 ```
+
+Each task inherits the defaults and can override the timm backbone or training schedule. The `heads` dictionary defines one classifier per attribute—add as many as you need, choosing the appropriate loss (`cross_entropy`, `bce_with_logits`, etc.) and the metrics you want logged per head.
 
 ### Step 3: Train Vehicle Classifier
 
 ```bash
 python scripts/train.py \
     --config configs/classification_config.yaml \
-    --task vehicle_classification \
+    --task classification \
+    --classification-task vehicle_types \
     --train-data vehicle_dataset/train \
     --val-data vehicle_dataset/val \
     --output-dir ./outputs/vehicle_classifier

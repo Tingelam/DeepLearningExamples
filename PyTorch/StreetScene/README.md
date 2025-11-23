@@ -22,6 +22,7 @@ The Street Scene Optimization framework provides:
 
 - **Modular Architecture**: Clean separation between data, models, training, and evaluation components
 - **Multiple Task Support**: Detection, vehicle classification, and human attribute analysis
+- **timm-Powered Classification**: ResNet family backbones from `timm` with configurable multi-head classifiers
 - **Performance Optimized**: Mixed precision training, multi-GPU support, and Tensor Core utilization
 - **Extensible Design**: Easy to add new models, datasets, and tasks
 - **Production Ready**: Comprehensive logging, checkpointing, and monitoring
@@ -124,7 +125,7 @@ StreetScene/
 git clone https://github.com/NVIDIA/DeepLearningExamples.git
 cd DeepLearningExamples/PyTorch/StreetScene
 
-# Install Python dependencies (includes ultralytics for YOLO)
+# Install Python dependencies (includes ultralytics for YOLO and timm for ResNet backbones)
 pip install -r requirements.txt
 ```
 
@@ -231,10 +232,22 @@ python scripts/inference.py \
 ```bash
 python scripts/train.py \
     --config configs/classification_config.yaml \
-    --task vehicle_classification \
+    --task classification \
+    --classification-task vehicle_types \
     --train-data /path/to/vehicle/data \
     --val-data /path/to/val/data \
-    --output-dir ./outputs/vehicle_classification
+    --output-dir ./outputs/vehicle_types
+```
+
+```bash
+# Train multi-head human attribute recognition
+python scripts/train.py \
+    --config configs/classification_config.yaml \
+    --task classification \
+    --classification-task human_attributes \
+    --train-data /path/to/human/data \
+    --val-data /path/to/human/val \
+    --output-dir ./outputs/human_attributes
 ```
 
 ### 5. Evaluate Models
@@ -249,6 +262,15 @@ python scripts/evaluate.py \
     --checkpoint ./outputs/vehicle_detection/best.pt \
     --data-yaml configs/datasets/vehicle_detection.yaml \
     --output-dir ./outputs/eval_results
+
+# Evaluate classification model
+python scripts/evaluate.py \
+    --config configs/classification_config.yaml \
+    --task classification \
+    --classification-task human_attributes \
+    --test-data /path/to/human/test \
+    --checkpoint ./outputs/human_attributes/best_model.pth \
+    --output-dir ./outputs/human_attributes/test_results
 ```
 
 ## End-to-End Workflow
@@ -421,6 +443,51 @@ def create_detection_model(config: Dict[str, Any], task_config: Optional[Dict[st
         )
     # ... existing models
 ```
+
+## Adding New Classification Tasks
+
+Classification is configured entirely through `configs/classification_config.yaml`. The `classification.defaults` block defines shared settings for the timm backbone, training schedule, and data normalization, while each entry under `classification.tasks` overrides what it needs and declares one or more prediction heads. For example:
+
+```yaml
+classification:
+  defaults:
+    model:
+      backbone: "resnet50"
+      pretrained: true
+      global_pool: "avg"
+      freeze_backbone: false
+    training:
+      batch_size: 64
+      learning_rate: 0.01
+      epochs: 90
+      optimizer: "sgd"
+    data:
+      image_size: [224, 224]
+  tasks:
+    vehicle_types:
+      description: "Vehicle type classification"
+      heads:
+        vehicle_type:
+          num_classes: 5
+          loss: "cross_entropy"
+          metrics: ["accuracy"]
+    human_attributes:
+      description: "Shared backbone with multiple attribute heads"
+      model:
+        backbone: "resnet34"
+        freeze_backbone: true
+      heads:
+        gender:
+          num_classes: 2
+          loss: "cross_entropy"
+          metrics: ["accuracy"]
+        clothing_style:
+          num_classes: 8
+          loss: "cross_entropy"
+          metrics: ["accuracy"]
+```
+
+Behind the scenes the classification factory calls `timm.create_model` to build the requested ResNet backbone with `num_classes=0`, and attaches a linear head per entry in `heads`. Each head can specify its own loss (`cross_entropy`, `bce_with_logits`, etc.), class weights, and the metrics that the trainer should log. Switching tasks at runtime is as simple as passing `--classification-task <task_name>` (or `classification_task="<task_name>"` when using the Python API) to train, evaluate, or run inference with a new multi-head configuration—no code edits required.
 
 ## Performance Optimization
 

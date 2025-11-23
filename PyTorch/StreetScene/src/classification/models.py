@@ -1,115 +1,177 @@
 """
-Base classification models for Street Scene optimization.
+Classification models built on top of timm backbones.
 """
 
+from __future__ import annotations
+
+import copy
+from typing import Any, Dict, Iterable, List, Optional
+
+import timm
 import torch
 import torch.nn as nn
-from torchvision.models import resnet50, resnet34
-from typing import Dict, Any
 
 
-class BaseClassificationModel(nn.Module):
-    """Base class for classification models."""
-    
-    def __init__(self, num_classes: int, **kwargs):
+def _merge_dict(base: Optional[Dict[str, Any]], override: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """Recursively merge two dictionaries without mutating the inputs."""
+    base = copy.deepcopy(base) if base else {}
+    if not override:
+        return base
+    for key, value in override.items():
+        if isinstance(value, dict) and isinstance(base.get(key), dict):
+            base[key] = _merge_dict(base[key], value)
+        else:
+            base[key] = copy.deepcopy(value)
+    return base
+
+
+def resolve_classification_task_config(config: Dict[str, Any], task_name: str) -> Dict[str, Any]:
+    """Resolve classification defaults and overrides for a given task."""
+    classification_cfg = config.get('classification', {})
+    tasks = classification_cfg.get('tasks', {})
+    if task_name not in tasks:
+        raise ValueError(
+            f"Unknown classification task '{task_name}'. Available tasks: {list(tasks.keys())}"
+        )
+
+    defaults = classification_cfg.get('defaults', {})
+    task_cfg = copy.deepcopy(tasks[task_name])
+
+    merged_model = _merge_dict(defaults.get('model'), task_cfg.get('model'))
+    merged_training = _merge_dict(defaults.get('training'), task_cfg.get('training'))
+    merged_data = _merge_dict(defaults.get('data'), task_cfg.get('data'))
+    heads_cfg = task_cfg.get('heads', {})
+
+    if not heads_cfg:
+        raise ValueError(
+            f"Classification task '{task_name}' must define at least one prediction head in 'heads'."
+        )
+
+    return {
+        'name': task_name,
+        'description': task_cfg.get('description', ''),
+        'model': merged_model,
+        'training': merged_training,
+        'data': merged_data,
+        'heads': copy.deepcopy(heads_cfg),
+    }
+
+
+def _build_activation(name: str) -> Optional[nn.Module]:
+    activation = name.lower()
+    if activation in ('', 'identity', 'none'):
+        return None
+    if activation == 'relu':
+        return nn.ReLU(inplace=True)
+    if activation == 'gelu':
+        return nn.GELU()
+    if activation in ('silu', 'swish'):
+        return nn.SiLU(inplace=True)
+    raise ValueError(f"Unsupported activation '{name}' for classification head")
+
+
+class ClassificationHead(nn.Module):
+    """Configurable classification head made of optional hidden layers."""
+
+    def __init__(self, in_features: int, head_cfg: Dict[str, Any]):
         super().__init__()
-        self.num_classes = num_classes
-        self.model_name = kwargs.get('model_name', 'base_classification')
-        
+        if 'num_classes' not in head_cfg:
+            raise ValueError("Each head configuration must include 'num_classes'.")
+
+        num_classes = head_cfg['num_classes']
+        hidden_dims: Iterable[int]
+        hidden_dims = head_cfg.get('hidden_dims') or []
+        if isinstance(hidden_dims, int):
+            hidden_dims = [hidden_dims]
+
+        dropout = float(head_cfg.get('dropout', 0.0))
+        activation = _build_activation(head_cfg.get('activation', 'relu'))
+
+        layers: List[nn.Module] = []
+        prev_dim = in_features
+        for hidden_dim in hidden_dims:
+            layers.append(nn.Linear(prev_dim, hidden_dim))
+            if activation is not None:
+                layers.append(copy.deepcopy(activation))
+            if dropout > 0:
+                layers.append(nn.Dropout(dropout))
+            prev_dim = hidden_dim
+
+        layers.append(nn.Linear(prev_dim, num_classes))
+        self.classifier = nn.Sequential(*layers)
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Forward pass."""
-        raise NotImplementedError
-    
-    def predict(self, x: torch.Tensor) -> torch.Tensor:
-        """Inference method."""
-        self.eval()
-        with torch.no_grad():
-            logits = self.forward(x)
-            return torch.softmax(logits, dim=1)
+        return self.classifier(x)
 
 
-class VehicleClassifier(BaseClassificationModel):
-    """Vehicle classification model."""
-    
-    def __init__(self, num_classes: int, backbone: str = "resnet50", pretrained: bool = True, **kwargs):
-        super().__init__(num_classes, **kwargs)
-        self.backbone_name = backbone
-        
-        # Build backbone
-        if backbone == "resnet50":
-            self.backbone = resnet50(pretrained=pretrained)
-            backbone_features = 2048
-        elif backbone == "resnet34":
-            self.backbone = resnet34(pretrained=pretrained)
-            backbone_features = 512
-        else:
-            raise ValueError(f"Unsupported backbone: {backbone}")
-        
-        # Replace classification head
-        self.backbone.fc = nn.Linear(backbone_features, num_classes)
-        
-        # Initialize new classification layer
-        nn.init.xavier_uniform_(self.backbone.fc.weight)
-        nn.init.constant_(self.backbone.fc.bias, 0)
-    
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Forward pass."""
-        return self.backbone(x)
+class TimmClassificationModel(nn.Module):
+    """Classification model that wraps a timm backbone with configurable heads."""
 
+    def __init__(self, model_cfg: Dict[str, Any], heads_cfg: Dict[str, Dict[str, Any]]):
+        super().__init__()
+        if not heads_cfg:
+            raise ValueError("At least one prediction head must be provided.")
 
-class HumanAttributeClassifier(BaseClassificationModel):
-    """Human attribute classification model."""
-    
-    def __init__(self, num_classes: int, backbone: str = "resnet34", pretrained: bool = True, **kwargs):
-        super().__init__(num_classes, **kwargs)
-        self.backbone_name = backbone
-        
-        # Build backbone
-        if backbone == "resnet34":
-            self.backbone = resnet34(pretrained=pretrained)
-            backbone_features = 512
-        else:
-            raise ValueError(f"Unsupported backbone for attribute classification: {backbone}")
-        
-        # Multi-task heads for different attributes
-        self.backbone.fc = nn.Identity()
-        
-        # Attribute heads (example: gender, age group, clothing type, etc.)
-        self.gender_head = nn.Linear(backbone_features, 2)  # male/female
-        self.age_head = nn.Linear(backbone_features, 4)     # age groups
-        self.clothing_head = nn.Linear(backbone_features, 8) # clothing types
-        
-        # Initialize heads
-        for head in [self.gender_head, self.age_head, self.clothing_head]:
-            nn.init.xavier_uniform_(head.weight)
-            nn.init.constant_(head.bias, 0)
-    
+        backbone_name = model_cfg.get('backbone', 'resnet50')
+        pretrained = model_cfg.get('pretrained', True)
+        in_chans = model_cfg.get('in_channels', 3)
+        global_pool = model_cfg.get('global_pool', 'avg')
+        drop_rate = model_cfg.get('dropout', 0.0)
+        drop_path_rate = model_cfg.get('drop_path_rate', 0.0)
+        checkpoint_path = model_cfg.get('checkpoint_path')
+        backbone_kwargs = copy.deepcopy(model_cfg.get('backbone_kwargs') or {})
+
+        self.backbone = timm.create_model(
+            backbone_name,
+            pretrained=pretrained,
+            in_chans=in_chans,
+            num_classes=0,
+            global_pool=global_pool,
+            drop_rate=drop_rate,
+            drop_path_rate=drop_path_rate,
+            checkpoint_path=checkpoint_path,
+            **backbone_kwargs,
+        )
+
+        self.feature_dim = getattr(self.backbone, 'num_features', None)
+        if self.feature_dim is None:
+            raise ValueError(
+                f"Backbone '{backbone_name}' does not expose 'num_features' needed for heads."
+            )
+
+        freeze_backbone = model_cfg.get('freeze_backbone', False)
+        feature_extract = model_cfg.get('feature_extract', False)
+        if freeze_backbone or feature_extract:
+            for param in self.backbone.parameters():
+                param.requires_grad = False
+
+        self.heads = nn.ModuleDict({
+            head_name: ClassificationHead(self.feature_dim, head_cfg)
+            for head_name, head_cfg in heads_cfg.items()
+        })
+        self.head_names = list(self.heads.keys())
+        self.return_features = model_cfg.get('return_features', False)
+
     def forward(self, x: torch.Tensor) -> Dict[str, torch.Tensor]:
-        """Forward pass."""
         features = self.backbone(x)
-        
-        return {
-            'gender': self.gender_head(features),
-            'age': self.age_head(features),
-            'clothing': self.clothing_head(features)
-        }
+        if isinstance(features, (list, tuple)):
+            features = features[-1]
+        if features.dim() > 2:
+            features = torch.flatten(features, 1)
+
+        outputs = {name: head(features) for name, head in self.heads.items()}
+        if self.return_features:
+            outputs['features'] = features
+        return outputs
 
 
-def create_classification_model(config: Dict[str, Any], task_type: str) -> BaseClassificationModel:
-    """Factory function to create classification models."""
-    if task_type == "vehicle":
-        model_config = config['classification']['vehicle']
-        return VehicleClassifier(
-            num_classes=model_config['num_classes'],
-            backbone=model_config['name'],
-            pretrained=model_config['pretrained']
-        )
-    elif task_type == "human_attributes":
-        model_config = config['classification']['human_attributes']
-        return HumanAttributeClassifier(
-            num_classes=model_config['num_classes'],
-            backbone=model_config['name'],
-            pretrained=model_config['pretrained']
-        )
-    else:
-        raise ValueError(f"Unsupported classification task: {task_type}")
+def create_classification_model(
+    config: Dict[str, Any],
+    task_name: str,
+    task_config: Optional[Dict[str, Any]] = None,
+) -> nn.Module:
+    """Factory that builds a classification model for the requested task."""
+    resolved_config = task_config or resolve_classification_task_config(config, task_name)
+    model_cfg = resolved_config['model']
+    heads_cfg = resolved_config['heads']
+    return TimmClassificationModel(model_cfg, heads_cfg)

@@ -10,7 +10,14 @@ The main pipeline class for end-to-end training and evaluation.
 
 ```python
 class StreetScenePipeline:
-    def __init__(self, config_path: str, task_type: str, log_level: str = "INFO")
+    def __init__(
+        self,
+        config_path: str,
+        task_type: str,
+        log_level: str = "INFO",
+        detection_task: Optional[str] = None,
+        classification_task: Optional[str] = None,
+    )
     def train(self, train_data_path: str, val_data_path: Optional[str] = None, 
               annotation_file: Optional[str] = None, output_dir: str = "./outputs",
               resume_checkpoint: Optional[str] = None) -> Dict[str, Any]
@@ -21,7 +28,9 @@ class StreetScenePipeline:
 
 **Parameters:**
 - `config_path`: Path to YAML configuration file
-- `task_type`: One of "detection", "vehicle_classification", "human_attributes"
+- `task_type`: Either "detection" or "classification"
+- `detection_task`: Name of the detection task from `detection_config.yaml` (optional)
+- `classification_task`: Name of the classification task from `classification_config.yaml` (required when `task_type="classification"`)
 - `log_level`: Logging level (DEBUG, INFO, WARNING, ERROR)
 
 **Example:**
@@ -51,14 +60,17 @@ class BaseDetectionModel(nn.Module):
     def predict(self, x: torch.Tensor) -> Dict[str, torch.Tensor]
 ```
 
-#### BaseClassificationModel
+#### TimmClassificationModel
 
 ```python
-class BaseClassificationModel(nn.Module):
-    def __init__(self, num_classes: int, **kwargs)
-    def forward(self, x: torch.Tensor) -> torch.Tensor
-    def predict(self, x: torch.Tensor) -> torch.Tensor
+class TimmClassificationModel(nn.Module):
+    def __init__(self, model_cfg: Dict[str, Any], heads_cfg: Dict[str, Dict[str, Any]])
+    def forward(self, x: torch.Tensor) -> Dict[str, torch.Tensor]
 ```
+
+- Builds a ResNet-family backbone via `timm.create_model(..., num_classes=0)`
+- Adds one linear head per entry in `heads_cfg`
+- Returns a dictionary of logits keyed by head name (e.g., `{"vehicle_type": logits}`)
 
 #### Trainer
 
@@ -107,12 +119,14 @@ Supported models:
 #### Classification Models
 
 ```python
-def create_classification_model(config: Dict[str, Any], task_type: str) -> BaseClassificationModel
+def create_classification_model(
+    config: Dict[str, Any],
+    task_name: str,
+    task_config: Optional[Dict[str, Any]] = None,
+) -> nn.Module
 ```
 
-Supported task types:
-- `vehicle`: Vehicle type classification
-- `human_attributes`: Multi-task human attribute classification
+`task_name` must correspond to an entry under `classification.tasks` in `configs/classification_config.yaml`. Each task resolves the backbone configuration and the set of heads to attach to the shared features. Multi-head outputs are returned as a dictionary keyed by head name.
 
 ### Common Utilities
 
@@ -163,49 +177,40 @@ mixed_precision:
 
 ```yaml
 classification:
-  vehicle:
+  defaults:
     model:
-      name: str           # Model name (e.g., "resnet50")
-      num_classes: int    # Number of vehicle classes
-      pretrained: bool    # Use pretrained weights
-    
+      backbone: str        # timm backbone name (e.g., "resnet50")
+      pretrained: bool     # Whether to load ImageNet weights
+      global_pool: str     # Pooling mode passed to timm ("avg", "max", etc.)
+      freeze_backbone: bool # Freeze backbone parameters
     training:
-      batch_size: int     # Training batch size
-      learning_rate: float # Initial learning rate
-      epochs: int         # Number of training epochs
-      optimizer: str      # Optimizer type
-      momentum: float     # SGD momentum
-      weight_decay: float # L2 regularization
-      
+      batch_size: int
+      learning_rate: float
+      epochs: int
+      optimizer: str
+      weight_decay: float
     data:
-      image_size: [int, int] # Input image size
-      mean: [float, float, float]    # RGB normalization mean
-      std: [float, float, float]     # RGB normalization std
-      
-    augmentation:
-      horizontal_flip: float # Probability of horizontal flip
-      rotation: int          # Max rotation degrees
-      brightness: float      # Brightness adjustment range
-      contrast: float        # Contrast adjustment range
-      
-  human_attributes:
-    model:
-      name: str           # Model name (e.g., "resnet34")
-      num_classes: int    # Total number of attribute combinations
-      pretrained: bool    # Use pretrained weights
-    
-    training:
-      batch_size: int     # Training batch size
-      learning_rate: float # Initial learning rate
-      epochs: int         # Number of training epochs
-      optimizer: str      # Optimizer type
-      weight_decay: float # L2 regularization
-      
-    data:
-      image_size: [int, int] # Input image size
-      mean: [float, float, float]    # RGB normalization mean
-      std: [float, float, float]     # RGB normalization std
+      image_size: [int, int]
+      mean: [float, float, float]
+      std: [float, float, float]
+  tasks:
+    <task_name>:
+      description: str
+      model: {...}      # Optional overrides (e.g., change backbone)
+      training: {...}   # Optional overrides (batch size, lr, etc.)
+      data: {...}       # Optional overrides (image size, normalization)
+      heads:
+        <head_name>:
+          num_classes: int
+          loss: str           # "cross_entropy", "bce_with_logits", etc.
+          metrics: [str, ...] # Metrics to log for this head (e.g., ["accuracy"])
+          class_weights: [float, ...]   # Optional PyTorch class weights
+          pos_weight: [float, ...]      # Optional BCE positive-class weights
 ```
+
+- `defaults` supply shared settings; each task inherits and may override them.
+- `heads` defines one classifier per attribute. The trainer sums the per-head losses (optionally weighted) and logs the requested metrics for every head each epoch.
+- Select a task at runtime via `--classification-task <task_name>` when using the CLI, or by passing `classification_task="<task_name>"` to `StreetScenePipeline`.
 
 ## Error Handling
 
