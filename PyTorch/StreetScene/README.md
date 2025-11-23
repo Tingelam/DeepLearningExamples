@@ -124,8 +124,22 @@ StreetScene/
 git clone https://github.com/NVIDIA/DeepLearningExamples.git
 cd DeepLearningExamples/PyTorch/StreetScene
 
-# Install Python dependencies
+# Install Python dependencies (includes ultralytics for YOLO)
 pip install -r requirements.txt
+```
+
+**Important Installation Notes for YOLO:**
+
+The framework uses `ultralytics>=8.0.0` for YOLOv8/YOLO11 detection tasks. On some systems, you may need additional dependencies:
+
+```bash
+# For systems with display servers (X11)
+pip install ultralytics opencv-python
+
+# For headless systems (Docker, remote servers)
+# The Dockerfile automatically includes libsm6 and libxext6 which are required
+# If installing manually, ensure these system packages are available:
+sudo apt-get install libsm6 libxext6 libxrender-dev libgl1-mesa-glx libglib2.0-0
 ```
 
 ### Docker Installation
@@ -134,24 +148,85 @@ pip install -r requirements.txt
 # Build Docker image
 docker build -t street-scene-pytorch .
 
-# Run container
+# Run container (with GPU support)
 docker run --gpus all -it --rm -v $(pwd):/workspace street-scene-pytorch bash
+
+# Run container (CPU only)
+docker run -it --rm -v $(pwd):/workspace street-scene-pytorch bash
 ```
 
 ## Quick Start
 
-### 1. Train a Detection Model
+### 1. Train a YOLO Detection Model
+
+The framework uses YOLOv8/YOLO11 models for modern detection. Available detection tasks are defined in the config:
 
 ```bash
+# Train vehicle detection using YOLO
 python scripts/train.py \
     --config configs/detection_config.yaml \
     --task detection \
+    --detection-task vehicle_detection \
     --train-data /path/to/train/data \
-    --val-data /path/to/val/data \
-    --output-dir ./outputs/detection
+    --data-yaml configs/datasets/vehicle_detection.yaml \
+    --output-dir ./outputs
+
+# Train pedestrian detection using YOLO
+python scripts/train.py \
+    --config configs/detection_config.yaml \
+    --task detection \
+    --detection-task pedestrian_detection \
+    --train-data /path/to/train/data \
+    --data-yaml configs/datasets/pedestrian_detection.yaml \
+    --output-dir ./outputs
+
+# Train vehicle tracking model
+python scripts/train.py \
+    --config configs/detection_config.yaml \
+    --task detection \
+    --detection-task vehicle_tracking \
+    --train-data /path/to/train/data \
+    --data-yaml configs/datasets/vehicle_tracking.yaml \
+    --output-dir ./outputs
 ```
 
-### 2. Train a Vehicle Classification Model
+### 2. Run YOLO Detection Inference
+
+```bash
+# Run object detection on images
+python scripts/inference.py \
+    --config configs/detection_config.yaml \
+    --task detection \
+    --detection-task vehicle_detection \
+    --checkpoint ./outputs/vehicle_detection/best.pt \
+    --input /path/to/test/image.jpg \
+    --output-dir ./outputs/predictions
+
+# Run on directory of images
+python scripts/inference.py \
+    --config configs/detection_config.yaml \
+    --task detection \
+    --detection-task vehicle_detection \
+    --checkpoint ./outputs/vehicle_detection/best.pt \
+    --input /path/to/test/images/ \
+    --output-dir ./outputs/predictions
+```
+
+### 3. Run YOLO Tracking
+
+```bash
+# Track objects in video
+python scripts/inference.py \
+    --config configs/detection_config.yaml \
+    --task detection \
+    --detection-task vehicle_tracking \
+    --mode track \
+    --checkpoint ./outputs/vehicle_tracking/best.pt \
+    --input /path/to/video.mp4 \
+    --output-dir ./outputs/tracks
+```
+
+### 4. Train a Vehicle Classification Model
 
 ```bash
 python scripts/train.py \
@@ -162,15 +237,18 @@ python scripts/train.py \
     --output-dir ./outputs/vehicle_classification
 ```
 
-### 3. Run Inference
+### 5. Evaluate Models
 
 ```bash
-python scripts/inference.py \
+# Evaluate detection model
+python scripts/evaluate.py \
     --config configs/detection_config.yaml \
     --task detection \
-    --checkpoint ./outputs/detection/best_model.pth \
-    --input /path/to/test/image.jpg \
-    --output results.json
+    --detection-task vehicle_detection \
+    --test-data /path/to/test/data \
+    --checkpoint ./outputs/vehicle_detection/best.pt \
+    --data-yaml configs/datasets/vehicle_detection.yaml \
+    --output-dir ./outputs/eval_results
 ```
 
 ## End-to-End Workflow
@@ -222,68 +300,126 @@ metrics = pipeline.evaluate(
 )
 ```
 
-## Adding New Tasks
+## Adding New Detection Tasks
 
-The framework is designed to make adding new tasks straightforward. Here's how to add a new detection model:
+The framework makes it easy to add new detection tasks without modifying code. Detection tasks are defined in the task catalog in `configs/detection_config.yaml`.
 
-### 1. Extend the Model Factory
+### Adding a New YOLO Detection Task
+
+To add a new detection task, simply add an entry to the `tasks` section in `detection_config.yaml`:
+
+```yaml
+# configs/detection_config.yaml
+tasks:
+  your_new_task:
+    description: "Description of your detection task"
+    model:
+      variant: "yolov8m"  # or yolov8n, yolov8s, yolov8l, yolov8x, yolo11m, etc.
+      num_classes: 3
+    dataset:
+      yaml: "configs/datasets/your_dataset.yaml"
+      classes: ["class1", "class2", "class3"]
+    training:
+      epochs: 100
+      batch_size: 32
+      learning_rate: 0.0001
+      optimizer: "adam"
+    augmentation:
+      horizontal_flip: 0.5
+      brightness: 0.1
+      contrast: 0.1
+    tracking_enabled: false  # Set to true if task requires tracking
+```
+
+Then use the task immediately:
+
+```bash
+python scripts/train.py \
+    --config configs/detection_config.yaml \
+    --task detection \
+    --detection-task your_new_task \
+    --train-data /path/to/data \
+    --data-yaml configs/datasets/your_dataset.yaml \
+    --output-dir ./outputs
+```
+
+### YOLO Model Variants
+
+The framework supports all YOLOv8 and YOLO11 variants:
+
+- **YOLOv8**: `yolov8n`, `yolov8s`, `yolov8m`, `yolov8l`, `yolov8x`
+- **YOLO11**: `yolo11n`, `yolo11s`, `yolo11m`, `yolo11l`, `yolo11x`
+
+Choose based on your accuracy/speed tradeoff:
+- `n` (nano): Smallest, fastest, least accurate
+- `s` (small): Small model
+- `m` (medium): Balanced model (recommended)
+- `l` (large): Large model, higher accuracy
+- `x` (extra-large): Largest model, highest accuracy
+
+### Creating a YOLO Dataset YAML
+
+For YOLO training, you need a dataset YAML file pointing to your data:
+
+```yaml
+# configs/datasets/your_dataset.yaml
+path: /path/to/dataset
+train: images/train
+val: images/val
+test: images/test  # optional
+
+nc: 3  # number of classes
+names: ['class1', 'class2', 'class3']  # class names
+```
+
+The dataset directory structure should be:
+```
+dataset/
+├── images/
+│   ├── train/
+│   ├── val/
+│   └── test/
+└── labels/
+    ├── train/
+    ├── val/
+    └── test/
+```
+
+Each image should have a corresponding `.txt` label file in YOLO format (one detection per line):
+```
+<class_id> <x_center> <y_center> <width> <height>
+```
+
+Where coordinates are normalized to [0, 1].
+
+### Legacy Model Extension
+
+If you need to add a custom PyTorch detection model (not YOLO), you can extend the framework:
 
 ```python
 # src/detection/models.py
-class NewDetectionModel(BaseDetectionModel):
+class CustomDetectionModel(BaseDetectionModel):
     def __init__(self, num_classes: int, **kwargs):
         super().__init__(num_classes, **kwargs)
         # Model implementation
     
     def forward(self, x: torch.Tensor) -> Dict[str, torch.Tensor]:
         # Forward pass implementation
+```
 
-def create_detection_model(config: Dict[str, Any]) -> BaseDetectionModel:
-    model_config = config['detection']['model']
+Then update the model factory to support your type:
+
+```python
+def create_detection_model(config: Dict[str, Any], task_config: Optional[Dict[str, Any]] = None) -> BaseDetectionModel:
+    model_config = task_config.get('model') if task_config else config.get('detection', {}).get('model', {})
+    model_type = model_config.get('type', 'yolo').lower()
     
-    if model_config['name'] == 'new_model':
-        return NewDetectionModel(
-            num_classes=model_config['num_classes'],
+    if model_type == 'custom':
+        return CustomDetectionModel(
+            num_classes=model_config.get('num_classes', 80),
             **model_config
         )
     # ... existing models
-```
-
-### 2. Create Configuration
-
-```yaml
-# configs/new_detection_config.yaml
-detection:
-  model:
-    name: "new_model"
-    num_classes: 80
-    # ... model-specific parameters
-```
-
-### 3. Add Training Logic (if needed)
-
-If the new model requires specialized training logic, extend the trainer:
-
-```python
-# src/common/trainer.py
-class NewDetectionTrainer(Trainer):
-    def _create_criterion(self) -> nn.Module:
-        # Custom loss function
-    
-    def _compute_loss(self, outputs, targets) -> torch.Tensor:
-        # Custom loss computation
-```
-
-### 4. Update Pipeline Factory
-
-```python
-# src/pipelines/pipeline.py
-def _create_trainer(self) -> Trainer:
-    if self.task_type == 'detection':
-        model_config = self.config['detection']['model']
-        if model_config['name'] == 'new_model':
-            return NewDetectionTrainer(self.model, self.config)
-    # ... existing trainers
 ```
 
 ## Performance Optimization
@@ -320,15 +456,17 @@ python -m torch.distributed.launch --nproc_per_node=4 scripts/train.py \
 
 The framework uses YAML configuration files for easy customization:
 
-### Detection Configuration
+### YOLO Detection Configuration with Task Catalog
 
 ```yaml
 detection:
+  # Default model configuration (used if no task is specified)
   model:
-    name: "ssd300"
-    backbone: "resnet50"
+    type: "yolo"
+    variant: "yolov8n"
     num_classes: 80
   
+  # Global training defaults
   training:
     batch_size: 32
     learning_rate: 0.001
@@ -337,17 +475,66 @@ detection:
     momentum: 0.9
     weight_decay: 0.0005
     
+  # Global data configuration
   data:
-    image_size: [300, 300]
+    image_size: [640, 640]
     mean: [0.485, 0.456, 0.406]
     std: [0.229, 0.224, 0.225]
     
+  # Global augmentation configuration
   augmentation:
     horizontal_flip: 0.5
     brightness: 0.2
     contrast: 0.2
     saturation: 0.2
-    
+
+  # Task catalog - each task inherits defaults and can override them
+  tasks:
+    vehicle_detection:
+      description: "Vehicle detection in street scenes"
+      model:
+        variant: "yolov8m"
+        num_classes: 5
+      dataset:
+        yaml: "configs/datasets/vehicle_detection.yaml"
+        classes: ["car", "truck", "bus", "motorcycle", "bicycle"]
+      training:
+        epochs: 120
+        batch_size: 32
+        learning_rate: 0.0001
+        optimizer: "adam"
+      tracking_enabled: false
+
+    pedestrian_detection:
+      description: "Pedestrian detection in street scenes"
+      model:
+        variant: "yolov8m"
+        num_classes: 1
+      dataset:
+        yaml: "configs/datasets/pedestrian_detection.yaml"
+        classes: ["person"]
+      training:
+        epochs: 100
+        batch_size: 32
+      tracking_enabled: false
+
+    vehicle_tracking:
+      description: "Vehicle tracking and re-identification"
+      model:
+        variant: "yolov8m"
+        num_classes: 1
+      dataset:
+        yaml: "configs/datasets/vehicle_tracking.yaml"
+        classes: ["vehicle"]
+      training:
+        epochs: 150
+        batch_size: 16
+      tracking:
+        enabled: true
+        tracker: "botsort.yaml"
+        max_age: 30
+        min_hits: 3
+      
 mixed_precision:
   enabled: true
   loss_scale: "dynamic"
@@ -377,19 +564,31 @@ classification:
 ### Training Script (`scripts/train.py`)
 
 Comprehensive training script with support for:
+- Task-specific configuration via `--detection-task`
+- YOLO dataset YAML configuration via `--data-yaml`
 - Resume from checkpoints
-- Multi-GPU training
 - Custom logging and monitoring
 - Automatic model saving
 
 ```bash
+# Train a specific YOLO detection task
 python scripts/train.py \
     --config configs/detection_config.yaml \
     --task detection \
+    --detection-task vehicle_detection \
     --train-data /path/to/train \
-    --val-data /path/to/val \
+    --data-yaml configs/datasets/vehicle_detection.yaml \
+    --output-dir ./outputs
+
+# Resume training
+python scripts/train.py \
+    --config configs/detection_config.yaml \
+    --task detection \
+    --detection-task vehicle_detection \
+    --train-data /path/to/train \
+    --data-yaml configs/datasets/vehicle_detection.yaml \
     --output-dir ./outputs \
-    --resume ./outputs/checkpoint_epoch_50.pth
+    --resume ./outputs/vehicle_detection/last.pt
 ```
 
 ### Evaluation Script (`scripts/evaluate.py`)
@@ -398,13 +597,18 @@ Model evaluation with comprehensive metrics:
 - Accuracy, precision, recall, F1-score
 - mAP for detection tasks
 - Per-class performance analysis
+- YOLO-compatible evaluation
 
 ```bash
+# Evaluate detection model
 python scripts/evaluate.py \
     --config configs/detection_config.yaml \
     --task detection \
+    --detection-task vehicle_detection \
     --test-data /path/to/test \
-    --checkpoint ./outputs/best_model.pth
+    --checkpoint ./outputs/vehicle_detection/best.pt \
+    --data-yaml configs/datasets/vehicle_detection.yaml \
+    --output-dir ./outputs/eval_results
 ```
 
 ### Inference Script (`scripts/inference.py`)
@@ -413,16 +617,41 @@ Production-ready inference with:
 - Batch processing support
 - Confidence thresholding
 - JSON output format
-- Visualization options
+- **Object tracking support** via YOLO tracker
+- Video and image processing
 
 ```bash
+# Detection on images
 python scripts/inference.py \
     --config configs/detection_config.yaml \
     --task detection \
-    --checkpoint ./outputs/best_model.pth \
+    --detection-task vehicle_detection \
+    --checkpoint ./outputs/vehicle_detection/best.pt \
     --input /path/to/images \
-    --output results.json \
-    --confidence 0.7
+    --output-dir ./outputs/predictions \
+    --confidence 0.5
+
+# Object tracking on video
+python scripts/inference.py \
+    --config configs/detection_config.yaml \
+    --task detection \
+    --detection-task vehicle_tracking \
+    --mode track \
+    --checkpoint ./outputs/vehicle_tracking/best.pt \
+    --input /path/to/video.mp4 \
+    --output-dir ./outputs/tracks \
+    --tracker botsort.yaml
+
+# Custom tracker configuration
+python scripts/inference.py \
+    --config configs/detection_config.yaml \
+    --task detection \
+    --detection-task vehicle_tracking \
+    --mode track \
+    --checkpoint ./outputs/vehicle_tracking/best.pt \
+    --input /path/to/video.mp4 \
+    --output-dir ./outputs/tracks \
+    --tracker bytetrack.yaml
 ```
 
 ## Contributing

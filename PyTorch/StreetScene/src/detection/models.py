@@ -1,11 +1,15 @@
 """
-Base detection models for Street Scene optimization.
+Detection models for Street Scene optimization.
+
+Supports both legacy SSD models and modern YOLO models via ultralytics.
 """
 
 import torch
 import torch.nn as nn
-from torchvision.models import resnet50, resnet34
-from typing import Dict, Any
+from typing import Dict, Any, Optional
+import logging
+
+from .yolo_adapter import YOLOAdapter
 
 
 class BaseDetectionModel(nn.Module):
@@ -27,67 +31,73 @@ class BaseDetectionModel(nn.Module):
             return self.forward(x)
 
 
-class SSD300(BaseDetectionModel):
-    """SSD300 model for street scene detection."""
+class YOLODetectionModel(BaseDetectionModel):
+    """YOLO detection model wrapper for ultralytics YOLO variants."""
     
-    def __init__(self, num_classes: int, backbone: str = "resnet50", **kwargs):
+    def __init__(
+        self,
+        num_classes: int,
+        model_variant: str = "yolov8n",
+        device: Optional[str] = None,
+        **kwargs
+    ):
         super().__init__(num_classes, **kwargs)
-        self.backbone_name = backbone
+        self.model_variant = model_variant
+        self.device = device or ('cuda' if torch.cuda.is_available() else 'cpu')
         
-        # Build backbone
-        if backbone == "resnet50":
-            self.backbone = resnet50(pretrained=True)
-            backbone_features = 2048
-        else:
-            raise ValueError(f"Unsupported backbone: {backbone}")
+        # Create YOLO adapter
+        self.yolo = YOLOAdapter(
+            model_variant=model_variant,
+            task_name="detect",
+            num_classes=num_classes,
+            device=self.device,
+            **kwargs
+        )
         
-        # Remove classification head
-        self.backbone = nn.Sequential(*list(self.backbone.children())[:-2])
-        
-        # Detection heads (simplified)
-        self.num_anchors = 6  # Simplified anchor configuration
-        self.loc_head = nn.Conv2d(backbone_features, self.num_anchors * 4, 3, padding=1)
-        self.conf_head = nn.Conv2d(backbone_features, self.num_anchors * (num_classes + 1), 3, padding=1)
-        
-        # Initialize weights
-        self._init_weights()
-    
-    def _init_weights(self):
-        """Initialize detection heads."""
-        for m in [self.loc_head, self.conf_head]:
-            nn.init.xavier_uniform_(m.weight)
-            nn.init.constant_(m.bias, 0)
+        self.logger = logging.getLogger(__name__)
     
     def forward(self, x: torch.Tensor) -> Dict[str, torch.Tensor]:
-        """Forward pass."""
-        features = self.backbone(x)
+        """
+        Forward pass through YOLO model.
         
-        # Predictions
-        loc_preds = self.loc_head(features)
-        conf_preds = self.conf_head(features)
-        
-        # Reshape for loss computation
-        batch_size = x.size(0)
-        loc_preds = loc_preds.permute(0, 2, 3, 1).contiguous()
-        loc_preds = loc_preds.view(batch_size, -1, 4)
-        
-        conf_preds = conf_preds.permute(0, 2, 3, 1).contiguous()
-        conf_preds = conf_preds.view(batch_size, -1, self.num_classes + 1)
-        
-        return {
-            'loc_preds': loc_preds,
-            'conf_preds': conf_preds
-        }
+        Args:
+            x: Input tensor (batch_size, 3, H, W)
+            
+        Returns:
+            Dictionary with detection outputs (for compatibility)
+        """
+        # YOLO expects PIL images or file paths, not tensors
+        # For direct tensor forward pass, we use the underlying ultralytics model
+        self.yolo.model.eval()
+        with torch.no_grad():
+            outputs = self.yolo.model(x)
+        return outputs
 
 
-def create_detection_model(config: Dict[str, Any]) -> BaseDetectionModel:
-    """Factory function to create detection models."""
-    model_config = config['detection']['model']
+def create_detection_model(config: Dict[str, Any], task_config: Optional[Dict[str, Any]] = None) -> BaseDetectionModel:
+    """
+    Factory function to create detection models.
     
-    if model_config['name'] == 'ssd300':
-        return SSD300(
-            num_classes=model_config['num_classes'],
-            backbone=model_config['backbone']
+    Args:
+        config: Main configuration dictionary
+        task_config: Task-specific configuration (overrides config['detection'])
+        
+    Returns:
+        Detection model instance
+    """
+    # Use task_config if provided, otherwise use detection config
+    model_config = task_config.get('model') if task_config else config.get('detection', {}).get('model', {})
+    
+    if not model_config:
+        raise ValueError("No model configuration found in config or task_config")
+    
+    model_type = model_config.get('type', 'yolo').lower()
+    
+    if model_type == 'yolo':
+        return YOLODetectionModel(
+            num_classes=model_config.get('num_classes', 80),
+            model_variant=model_config.get('variant', 'yolov8n'),
+            device=model_config.get('device', None)
         )
     else:
-        raise ValueError(f"Unsupported detection model: {model_config['name']}")
+        raise ValueError(f"Unsupported detection model type: {model_type}")

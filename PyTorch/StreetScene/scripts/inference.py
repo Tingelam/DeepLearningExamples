@@ -118,15 +118,33 @@ def main():
     parser.add_argument("--task", type=str, required=True,
                        choices=["detection", "vehicle_classification", "human_attributes"],
                        help="Task type")
+    parser.add_argument("--detection-task", type=str,
+                       help="Specific detection task (e.g., vehicle_detection, pedestrian_detection)")
+    parser.add_argument("--mode", type=str, default="predict",
+                       choices=["predict", "track"],
+                       help="Inference mode (predict or track)")
     parser.add_argument("--checkpoint", type=str, required=True, help="Path to model checkpoint")
-    parser.add_argument("--input", type=str, required=True, help="Input image or directory")
+    parser.add_argument("--input", type=str, required=True, help="Input image, video or directory")
     parser.add_argument("--output", type=str, help="Output file for results (JSON)")
+    parser.add_argument("--output-dir", type=str, help="Output directory for predictions/tracks")
     parser.add_argument("--confidence", type=float, default=0.5, help="Confidence threshold for detection")
+    parser.add_argument("--tracker", type=str, default="botsort.yaml", help="Tracker configuration for tracking mode")
     
     args = parser.parse_args()
     
     # Setup
     device = get_device()
+    
+    # Create output directory if specified
+    output_dir = args.output_dir
+    if args.task == 'detection' and args.detection_task:
+        if not output_dir:
+            output_dir = f"./outputs/{args.detection_task}"
+        else:
+            output_dir = os.path.join(output_dir, args.detection_task)
+    
+    if output_dir:
+        os.makedirs(output_dir, exist_ok=True)
     
     # Load model
     model, config = load_model(args.config, args.task, args.checkpoint, device)
@@ -134,35 +152,87 @@ def main():
     # Get image size from config
     if args.task == 'detection':
         image_size = tuple(config['detection']['data']['image_size'])
+        is_yolo = hasattr(model, 'yolo')
     else:
         config_key = 'vehicle' if args.task == 'vehicle_classification' else 'human_attributes'
         image_size = tuple(config['classification'][config_key]['data']['image_size'])
+        is_yolo = False
     
     # Process input
     input_path = Path(args.input)
     if input_path.is_file():
         image_files = [input_path]
     elif input_path.is_dir():
-        image_files = list(input_path.glob("*.jpg")) + list(input_path.glob("*.png"))
+        image_files = list(input_path.glob("*.jpg")) + list(input_path.glob("*.png")) + list(input_path.glob("*.mp4"))
     else:
         raise ValueError(f"Invalid input path: {args.input}")
     
     # Run inference
     all_results = {}
     
-    for image_file in image_files:
-        print(f"Processing {image_file}...")
+    # For YOLO models with tracking
+    if is_yolo and args.task == 'detection' and args.mode == 'track':
+        print(f"Running YOLO tracking on {args.input}...")
+        save_dir = os.path.join(output_dir, 'tracks') if output_dir else None
+        track_results = model.yolo.track(
+            source=args.input,
+            conf=args.confidence,
+            tracker=args.tracker,
+            save_dir=save_dir,
+            save=output_dir is not None
+        )
         
-        # Preprocess
-        image_tensor, original_image = preprocess_image(str(image_file), image_size, device)
+        all_results['tracking'] = [
+            {
+                'frame': r.get('frame', 0),
+                'image': r.get('image', ''),
+                'detections': {
+                    'boxes': r.get('boxes', []),
+                    'confidences': r.get('confidences', []),
+                    'classes': r.get('classes', []),
+                    'track_ids': r.get('track_ids', []),
+                    'class_names': r.get('class_names', [])
+                }
+            }
+            for r in track_results
+        ]
+    # For YOLO models with prediction
+    elif is_yolo and args.task == 'detection' and args.mode == 'predict':
+        print(f"Running YOLO prediction on {args.input}...")
+        save_dir = os.path.join(output_dir, 'predictions') if output_dir else None
+        pred_results = model.yolo.predict(
+            source=args.input,
+            conf=args.confidence,
+            save_dir=save_dir,
+            save=output_dir is not None
+        )
         
-        # Run inference
-        if args.task == 'detection':
+        all_results['predictions'] = [
+            {
+                'image': r.get('image', ''),
+                'detections': {
+                    'boxes': r.get('boxes', []),
+                    'confidences': r.get('confidences', []),
+                    'classes': r.get('classes', []),
+                    'class_names': r.get('class_names', [])
+                }
+            }
+            for r in pred_results
+        ]
+    # For legacy detection models
+    elif args.task == 'detection':
+        for image_file in image_files:
+            print(f"Processing {image_file}...")
+            image_tensor, original_image = preprocess_image(str(image_file), image_size, device)
             results = run_detection_inference(model, image_tensor, config, args.confidence)
-        else:
+            all_results[str(image_file)] = results
+    # For classification models
+    else:
+        for image_file in image_files:
+            print(f"Processing {image_file}...")
+            image_tensor, original_image = preprocess_image(str(image_file), image_size, device)
             results = run_classification_inference(model, image_tensor, args.task)
-        
-        all_results[str(image_file)] = results
+            all_results[str(image_file)] = results
     
     # Save results
     if args.output:
@@ -170,6 +240,12 @@ def main():
         with open(args.output, 'w') as f:
             json.dump(all_results, f, indent=2)
         print(f"Results saved to {args.output}")
+    elif output_dir:
+        import json
+        result_file = os.path.join(output_dir, f"results_{args.mode}.json")
+        with open(result_file, 'w') as f:
+            json.dump(all_results, f, indent=2)
+        print(f"Results saved to {result_file}")
     else:
         print("Results:")
         for image_path, results in all_results.items():
