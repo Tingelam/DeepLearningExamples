@@ -17,3 +17,13 @@ logs/
 wandb/
 .vscode/
 .idea/
+outputs/
+data/processed/
+data/raw/
+*.pt
+*.jpg
+*.png
+*.jpeg
+*.bmp
+*.mp4
+*.avi

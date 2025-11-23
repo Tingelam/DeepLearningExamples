@@ -10,6 +10,7 @@ This repository provides a comprehensive framework for street scene optimization
 - [Directory Structure](#directory-structure)
 - [Installation](#installation)
 - [Quick Start](#quick-start)
+- [Data Workflow](#data-workflow)
 - [End-to-End Workflow](#end-to-end-workflow)
 - [Adding New Tasks](#adding-new-tasks)
 - [Performance Optimization](#performance-optimization)
@@ -157,36 +158,55 @@ docker run -it --rm -v $(pwd):/workspace street-scene-pytorch bash
 
 ## Quick Start
 
-### 1. Train a YOLO Detection Model
+### 0. Prepare Data (via Catalog)
 
-The framework uses YOLOv8/YOLO11 models for modern detection. Available detection tasks are defined in the config:
+Every dataset is registered in `data/datasets.yaml` with a name and version. Use the data preparation utility to convert raw data, build YOLO/classification structures, and update the catalog with provenance metadata.
 
 ```bash
-# Train vehicle detection using YOLO
+# Example: convert COCO-style vehicle data to YOLO and register as vehicle_detection v1
+python scripts/data_prepare.py \
+    --dataset vehicle_detection \
+    --version v1 \
+    --raw /data/raw/vehicles \
+    --output data/processed \
+    --task-type detection \
+    --data-format coco \
+    --splits train val test \
+    --classes car truck bus motorcycle bicycle \
+    --catalog data/datasets.yaml \
+    --description "Vehicle detection v1 derived from COCO"
+```
+
+See [docs/data_workflow.md](docs/data_workflow.md) for the complete data lifecycle.
+
+### 1. Train a YOLO Detection Model
+
+```bash
+# Train vehicle detection from the catalog
 python scripts/train.py \
     --config configs/detection_config.yaml \
     --task detection \
     --detection-task vehicle_detection \
-    --train-data /path/to/train/data \
-    --data-yaml configs/datasets/vehicle_detection.yaml \
+    --dataset vehicle_detection \
+    --version v1 \
     --output-dir ./outputs
 
-# Train pedestrian detection using YOLO
+# Train pedestrian detection (dataset defaults come from config)
 python scripts/train.py \
     --config configs/detection_config.yaml \
     --task detection \
     --detection-task pedestrian_detection \
-    --train-data /path/to/train/data \
-    --data-yaml configs/datasets/pedestrian_detection.yaml \
+    --dataset pedestrian_detection \
+    --version v1 \
     --output-dir ./outputs
 
-# Train vehicle tracking model
+# Train vehicle tracking model with catalog-managed data
 python scripts/train.py \
     --config configs/detection_config.yaml \
     --task detection \
     --detection-task vehicle_tracking \
-    --train-data /path/to/train/data \
-    --data-yaml configs/datasets/vehicle_tracking.yaml \
+    --dataset vehicle_tracking \
+    --version v1 \
     --output-dir ./outputs
 ```
 
@@ -250,6 +270,55 @@ python scripts/evaluate.py \
     --data-yaml configs/datasets/vehicle_detection.yaml \
     --output-dir ./outputs/eval_results
 ```
+
+## Data Workflow
+
+The Street Scene framework includes a complete data management system with a dataset catalog for versioning, reproducibility, and easy dataset switching.
+
+### Data Lifecycle: Acquire → Preprocess → Register → Use
+
+```
+┌──────────┐     ┌──────────────┐     ┌──────────┐     ┌──────────┐
+│ Acquire  │ --> │  Preprocess  │ --> │ Register │ --> │   Use    │
+│ Raw Data │     │   & Convert  │     │   in     │     │  in      │
+│          │     │   Format     │     │ Catalog  │     │ Pipeline │
+└──────────┘     └──────────────┘     └──────────┘     └──────────┘
+```
+
+### Key Features
+
+- **Dataset Catalog**: Centralized registry with version control, label schemas, and split manifests
+- **Multiple Format Support**: YOLO, COCO, Pascal VOC, Image Folder, CSV attributes
+- **Preprocessing Pipelines**: Shared augmentation (YOLO-specific HSV/mosaics, classification policies)
+- **Provenance Tracking**: Hash-based reproducibility - every dataset version logged with source hashes
+- **Task-Appropriate Loaders**: Auto-emit detections with bboxes/tracks or multi-attribute labels
+
+### Example: Prepare and Use a Dataset
+
+```bash
+# 1. Convert raw COCO data to YOLO format and register
+python scripts/data_prepare.py \
+    --dataset vehicle_detection \
+    --version v1 \
+    --raw /data/raw/vehicles \
+    --task-type detection \
+    --data-format coco \
+    --splits train val \
+    --classes car truck bus motorcycle bicycle
+
+# 2. Train using the catalog (no manual paths!)
+python scripts/train.py \
+    --config configs/detection_config.yaml \
+    --task detection \
+    --detection-task vehicle_detection \
+    --dataset vehicle_detection \
+    --version v1 \
+    --output-dir ./outputs/vehicle_det_v1
+
+# Result: Dataset manifest exported to outputs/vehicle_det_v1/ for traceability
+```
+
+For detailed documentation, see [docs/data_workflow.md](docs/data_workflow.md).
 
 ## End-to-End Workflow
 
