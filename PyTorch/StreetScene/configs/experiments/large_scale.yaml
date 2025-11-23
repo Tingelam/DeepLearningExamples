@@ -1,0 +1,47 @@
+# Large-scale experiment config - optimized for multi-GPU training
+
+experiment:
+  name: "large_scale"
+  description: "Large-scale training with distributed setup and advanced optimizations"
+  version: "1.0"
+
+# Aggressive training settings
+training:
+  epochs: 300
+  batch_size: 512
+  learning_rate: 0.01
+  optimizer: "adamw"
+  scheduler: "cosine"
+  warmup_epochs: 20
+  gradient_accumulation_steps: 2
+  mixed_precision: true
+
+# Multi-GPU settings
+hardware:
+  num_gpus: 8
+  distributed: true
+  backend: "nccl"
+
+# Advanced checkpointing
+checkpoint:
+  save_frequency: 5
+  keep_top_k: 5
+  checkpoint_best: true
+  checkpoint_last: true
+
+# Enhanced logging with wandb
+logging:
+  log_level: "INFO"
+  log_frequency: 50
+  tensorboard: true
+  wandb:
+    enabled: true
+    project: "streetscene"
+    tags: ["large_scale", "multi_gpu"]
+
+# Dataloader optimizations
+dataloader:
+  num_workers: 16
+  pin_memory: true
+  prefetch_factor: 4
+  persistent_workers: true

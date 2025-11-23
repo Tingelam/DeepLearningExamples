@@ -1,0 +1,53 @@
+# Task-specific config for vehicle detection
+
+# Task name
+task:
+  name: "vehicle_detection"
+  type: "detection"
+
+# Dataset overrides for vehicle detection
+dataset:
+  name: "vehicle_dataset"
+  type: "coco"
+  root_dir: "/data/vehicle_detection"
+  num_classes: 1  # Only vehicle class
+
+# Model overrides for detection
+model:
+  name: "yolov5_large"
+  backbone: "cspdarknet"
+  pretrained: true
+  detection_head: "yolo"
+  box_score_threshold: 0.45
+  nms_threshold: 0.5
+
+# Detection-specific training config
+training:
+  epochs: 120
+  batch_size: 32
+  learning_rate: 0.00025
+  weight_decay: 0.0005
+  optimizer: "sgd"
+  scheduler: "warmup_linear"
+  warmup_epochs: 3
+
+# Data augmentation for detection
+augmentation:
+  enabled: true
+  random_flip: 0.5
+  random_hsv: 0.015
+  mosaic: 0.7
+  resize:
+    min_size: 416
+    max_size: 416
+
+# Detection-specific evaluation
+evaluation:
+  metric: "mAP@0.5:0.95"
+  save_predictions: true
+  visualize: true
+
+# Logging for this task
+logging:
+  log_dir: "./logs/vehicle_detection"
+  log_level: "INFO"
