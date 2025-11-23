@@ -1,0 +1,53 @@
+# Task-specific config for pedestrian detection
+
+# Task name
+task:
+  name: "pedestrian_detection"
+  type: "detection"
+
+# Dataset overrides for pedestrian detection
+dataset:
+  name: "pedestrian_dataset"
+  type: "coco"
+  root_dir: "/data/pedestrian_detection"
+  num_classes: 1  # Only pedestrian class
+
+# Model overrides for detection
+model:
+  name: "fasterrcnn_resnet50"
+  backbone: "resnet50"
+  pretrained: true
+  detection_head: "faster_rcnn"
+  box_score_threshold: 0.5
+  nms_threshold: 0.5
+
+# Detection-specific training config
+training:
+  epochs: 150
+  batch_size: 16
+  learning_rate: 0.0001
+  weight_decay: 0.0005
+  optimizer: "sgd"
+  scheduler: "warmup_cosine"
+  warmup_epochs: 10
+
+# Data augmentation for detection
+augmentation:
+  enabled: true
+  random_flip: 0.5
+  random_crop: 0.3
+  color_jitter: 0.2
+  resize:
+    min_size: 600
+    max_size: 1000
+
+# Detection-specific evaluation
+evaluation:
+  metric: "mAP@0.5:0.95"
+  save_predictions: true
+  visualize: true
+
+# Logging for this task
+logging:
+  log_dir: "./logs/pedestrian_detection"
+  log_level: "DEBUG"

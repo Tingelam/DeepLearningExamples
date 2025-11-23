@@ -1,0 +1,53 @@
+# Task-specific config for vehicle classification
+
+# Task name
+task:
+  name: "vehicle_classification"
+  type: "classification"
+
+# Dataset overrides for vehicle classification
+dataset:
+  name: "vehicle_classification_dataset"
+  type: "imagenet"
+  root_dir: "/data/vehicle_classification"
+  num_classes: 5  # Car, truck, bus, motorcycle, other
+
+# Model overrides for classification
+model:
+  name: "resnet50_classifier"
+  backbone: "resnet50"
+  pretrained: true
+  num_classes: 5
+  global_pool: "adaptive_avg"
+
+# Classification-specific training config
+training:
+  epochs: 200
+  batch_size: 256
+  learning_rate: 0.1
+  weight_decay: 0.0001
+  optimizer: "sgd"
+  momentum: 0.9
+  scheduler: "step"
+  scheduler_milestones: [60, 120, 180]
+  scheduler_gamma: 0.1
+
+# Data augmentation for classification
+augmentation:
+  enabled: true
+  random_crop: 0.9
+  random_flip: 0.5
+  color_jitter: 0.4
+  gaussian_blur: 0.1
+  resize_size: 256
+  crop_size: 224
+
+# Classification-specific evaluation
+evaluation:
+  metric: "top1_accuracy"
+  save_predictions: true
+
+# Logging for this task
+logging:
+  log_dir: "./logs/vehicle_classification"
+  log_level: "INFO"

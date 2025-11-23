@@ -1,0 +1,28 @@
+# Baseline experiment config - minimal overrides
+
+experiment:
+  name: "baseline"
+  description: "Baseline experiment with default settings"
+  version: "1.0"
+
+# Use default training settings from task
+training:
+  epochs: 100
+  batch_size: 32
+
+# Hardware
+hardware:
+  num_gpus: 1
+  distributed: false
+
+# Checkpointing
+checkpoint:
+  save_frequency: 10
+  keep_top_k: 1
+
+# Logging targets
+logging:
+  log_level: "INFO"
+  tensorboard: true
+  wandb:
+    enabled: false
