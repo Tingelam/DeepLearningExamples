@@ -26,23 +26,25 @@ def main():
     parser.add_argument("--annotations", type=str, help="Path to annotation file")
     parser.add_argument("--data-yaml", type=str, help="Path to YOLO dataset YAML file")
     parser.add_argument("--output-dir", type=str, default="./outputs", help="Output directory")
+    parser.add_argument("--run-name", type=str, help="Name for this experimental run")
+    parser.add_argument("--config-override", type=str, action="append", dest="overrides",
+                       help="Config override in format 'key=value' (can be used multiple times)")
     parser.add_argument("--resume", type=str, help="Resume from checkpoint")
     parser.add_argument("--log-level", type=str, default="INFO", help="Logging level")
+    parser.add_argument("--seed", type=int, default=42, help="Random seed for reproducibility")
     
     args = parser.parse_args()
     
-    # Create output directory with task-specific subdirectory
-    output_dir = args.output_dir
-    if args.task == 'detection' and args.detection_task:
-        output_dir = os.path.join(args.output_dir, args.detection_task)
-    os.makedirs(output_dir, exist_ok=True)
-    
-    # Create pipeline
+    # Create pipeline with config overrides and run name
     pipeline = StreetScenePipeline(
         args.config,
         args.task,
-        args.log_level,
-        detection_task=args.detection_task
+        log_level=args.log_level,
+        detection_task=args.detection_task,
+        overrides=args.overrides,
+        run_name=args.run_name,
+        output_dir=args.output_dir,
+        seed=args.seed
     )
     
     # Train model
@@ -50,7 +52,6 @@ def main():
         'train_data_path': args.train_data,
         'val_data_path': args.val_data,
         'annotation_file': args.annotations,
-        'output_dir': output_dir,
     }
     
     # For YOLO models, add data_yaml if provided
@@ -63,7 +64,9 @@ def main():
     
     results = pipeline.train(**train_kwargs)
     
+    output_dir = results.get('output_dir', pipeline.run_dir)
     print(f"Training completed. Results saved to {output_dir}")
+    print(f"Run ID: {pipeline.run_id}")
     if isinstance(results, dict):
         if 'best_val_metric' in results:
             print(f"Best validation metric: {results['best_val_metric']}")

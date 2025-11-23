@@ -11,6 +11,7 @@ This repository provides a comprehensive framework for street scene optimization
 - [Installation](#installation)
 - [Quick Start](#quick-start)
 - [End-to-End Workflow](#end-to-end-workflow)
+- [Reproducibility](#reproducibility)
 - [Adding New Tasks](#adding-new-tasks)
 - [Performance Optimization](#performance-optimization)
 - [Configuration](#configuration)
@@ -299,6 +300,63 @@ metrics = pipeline.evaluate(
     checkpoint_path="./outputs/best_model.pth"
 )
 ```
+
+## Reproducibility
+
+The framework includes comprehensive reproducibility features to ensure consistent and verifiable experimental results.
+
+### Key Features
+
+- **Configuration Management**: Automatic config versioning and override system
+- **Run Tracking**: Unique run IDs with automatic metadata capture
+- **Model Registry**: Track all trained models with metrics and versions
+- **Deterministic Execution**: Locked random seeds for reproducible training
+- **Checkpoint Metadata**: Embed configuration hashes in checkpoints for verification
+
+### Quick Example
+
+```bash
+# Training with explicit run name and reproducible seed
+python scripts/train.py \
+    --config configs/detection_config.yaml \
+    --task detection \
+    --detection-task vehicle_detection \
+    --train-data /path/to/train \
+    --val-data /path/to/val \
+    --data-yaml configs/datasets/vehicle_detection.yaml \
+    --run-name my_vehicle_detector_v1 \
+    --seed 42
+
+# Evaluation with config hash verification
+python scripts/evaluate.py \
+    --config configs/detection_config.yaml \
+    --task detection \
+    --detection-task vehicle_detection \
+    --test-data /path/to/test \
+    --checkpoint outputs/20240115_143022_my_vehicle_detector_v1/best_model.pth \
+    --data-yaml configs/datasets/vehicle_detection.yaml \
+    --verify-config
+```
+
+Each run creates:
+- `outputs/<run_id>/config.yaml` - Resolved configuration
+- `outputs/<run_id>/metadata.yaml` - Framework versions and git info
+- `registry/model_registry.json` - Registry entry with metrics
+
+### Config Overrides Without File Modification
+
+```bash
+python scripts/train.py \
+    --config configs/detection_config.yaml \
+    --task detection \
+    --detection-task vehicle_detection \
+    --train-data /path/to/train \
+    --val-data /path/to/val \
+    --config-override detection.training.epochs=200 \
+    --config-override detection.training.learning_rate=0.0005
+```
+
+**For detailed reproducibility documentation**, see [REPRODUCIBILITY.md](docs/REPRODUCIBILITY.md).
 
 ## Adding New Detection Tasks
 

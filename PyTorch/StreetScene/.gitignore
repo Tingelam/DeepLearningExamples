@@ -17,3 +17,18 @@ logs/
 wandb/
 .vscode/
 .idea/
+
+# Experiment outputs (keep registry index, but not large files)
+outputs/
+/outputs/*
+!/outputs/.gitkeep
+
+# Large data files and model weights
+*.pth
+*.pt
+*.onnx
+data/
+datasets/
+
+# Registry backups
+*.registry.bak
